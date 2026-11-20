@@ -1,0 +1,317 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user profile, study preferences, and theme customization.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "email": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "avatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "bio": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "pastelTheme": {
+          "type": "string",
+          "enum": ["stone", "sage", "blush", "sky", "lavender", "butter"]
+        },
+        "dailyGoalMinutes": { "type": "number" },
+        "isPublic": { "type": "boolean" },
+        "handle": { "type": "string", "minLength": 0, "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "pastelTheme", "dailyGoalMinutes", "createdAt", "updatedAt"]
+    },
+    "StudyTask": {
+      "title": "StudyTask",
+      "description": "Personal study to-do task with priority level, status workflow, and reminder timestamp.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 1000 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "status": { "type": "string", "enum": ["not_started", "working", "completed"] },
+        "subjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "dueAt": { "type": "string", "minLength": 0, "maxLength": 64 },
+        "reminderAt": { "type": "string", "minLength": 0, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "title", "priority", "status", "createdAt", "updatedAt"]
+    },
+    "DailyGoal": {
+      "title": "DailyGoal",
+      "description": "User's specific daily study goals checklist item.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "targetDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "title", "targetDate", "completed", "createdAt", "updatedAt"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Color-coded syllabus subject.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "color": { "type": "string", "minLength": 4, "maxLength": 24 },
+        "description": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "color", "createdAt", "updatedAt"]
+    },
+    "Chapter": {
+      "title": "Chapter",
+      "description": "Syllabus chapter containing notes, video lecture links, and PDF metadata (no raw PDF stored).",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subjectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "order": { "type": "number" },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 50000 },
+        "videoLectures": { "type": "array" },
+        "pdfSources": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "subjectId", "title", "order", "notes", "videoLectures", "pdfSources", "createdAt", "updatedAt"]
+    },
+    "Flashcard": {
+      "title": "Flashcard",
+      "description": "Spaced repetition flashcard linked to a subject and optional chapter.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subjectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "chapterId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "front": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "back": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "repetitions": { "type": "number" },
+        "intervalDays": { "type": "number" },
+        "easeFactor": { "type": "number" },
+        "nextReviewAt": { "type": "string", "minLength": 10, "maxLength": 64 },
+        "lastReviewedAt": { "type": "string", "minLength": 0, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "subjectId", "front", "back", "repetitions", "intervalDays", "easeFactor", "nextReviewAt", "createdAt", "updatedAt"]
+    },
+    "FocusSession": {
+      "title": "FocusSession",
+      "description": "Completed solo, public room, or private room focus session log.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "enum": ["timer", "stopwatch"] },
+        "contextType": { "type": "string", "enum": ["solo", "public_room", "private_room"] },
+        "roomId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "roomName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "subjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "subjectName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "subjectColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "durationSeconds": { "type": "number" },
+        "ambientSound": { "type": "string", "enum": ["none", "brown", "pink", "white", "rain", "forest"] },
+        "completedAt": { "type": "string", "minLength": 10, "maxLength": 64 },
+        "dateKey": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "mode", "contextType", "durationSeconds", "ambientSound", "completedAt", "dateKey", "createdAt"]
+    },
+    "FocusRoom": {
+      "title": "FocusRoom",
+      "description": "Collaborative public or password-protected private study room.",
+      "type": "object",
+      "properties": {
+        "hostId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hostName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "topic": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "visibility": { "type": "string", "enum": ["public", "private"] },
+        "timerMode": { "type": "string", "enum": ["timer", "stopwatch"] },
+        "timerDurationSeconds": { "type": "number" },
+        "timerStatus": { "type": "string", "enum": ["idle", "running", "paused"] },
+        "timerStartedAtMs": { "type": "number" },
+        "timerAccumulatedSeconds": { "type": "number" },
+        "ambientSound": { "type": "string", "enum": ["none", "brown", "pink", "white", "rain", "forest"] },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "hostId",
+        "hostName",
+        "name",
+        "visibility",
+        "timerMode",
+        "timerDurationSeconds",
+        "timerStatus",
+        "timerStartedAtMs",
+        "timerAccumulatedSeconds",
+        "ambientSound",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoomLock": {
+      "title": "RoomLock",
+      "description": "Non-readable server-side verified password hash for private focus rooms.",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hostId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "passwordHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "hostId", "passwordHash", "createdAt", "updatedAt"]
+    },
+    "RoomPass": {
+      "title": "RoomPass",
+      "description": "Owner-only private room password verification proof written atomically when joining a private room.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "passHash": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "roomId", "passHash", "createdAt"]
+    },
+    "RoomParticipant": {
+      "title": "RoomParticipant",
+      "description": "Active member presence inside a collaborative study room.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomVisibility": { "type": "string", "enum": ["public", "private"] },
+        "roomHostId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "avatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "subjectName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "status": { "type": "string", "enum": ["focusing", "break", "idle"] },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "roomId", "roomVisibility", "roomHostId", "displayName", "status", "joinedAt", "updatedAt"]
+    },
+    "RoomMessage": {
+      "title": "RoomMessage",
+      "description": "Quiet study check-in note posted inside a collaborative focus room.",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "roomVisibility": { "type": "string", "enum": ["public", "private"] },
+        "roomHostId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 280 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["roomId", "roomVisibility", "roomHostId", "senderId", "senderName", "text", "createdAt"]
+    },
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Opt-in public study profile (no PII) discoverable by friends.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "handle": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "avatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "bio": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "pastelTheme": {
+          "type": "string",
+          "enum": ["stone", "sage", "blush", "sky", "lavender", "butter"]
+        },
+        "isPublic": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "handle", "displayName", "pastelTheme", "isPublic", "createdAt", "updatedAt"]
+    },
+    "FriendLink": {
+      "title": "FriendLink",
+      "description": "User's added study friend reference.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "friendUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "handle": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "avatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "bio": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "friendUid", "handle", "displayName", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User private profile and theme preferences."
+    },
+    "/users/{userId}/friends/{friendId}": {
+      "schema": { "$ref": "#/entities/FriendLink" },
+      "description": "User added study friends."
+    },
+    "/publicProfiles/{userId}": {
+      "schema": { "$ref": "#/entities/PublicProfile" },
+      "description": "Publicly visible study profiles without PII."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/StudyTask" },
+      "description": "User personal tasks with priorities and reminders."
+    },
+    "/users/{userId}/dailyGoals/{goalId}": {
+      "schema": { "$ref": "#/entities/DailyGoal" },
+      "description": "User daily study goals."
+    },
+    "/users/{userId}/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Color-coded syllabus subjects."
+    },
+    "/users/{userId}/chapters/{chapterId}": {
+      "schema": { "$ref": "#/entities/Chapter" },
+      "description": "Chapters under subjects with notes, lecture links, and PDF metadata."
+    },
+    "/users/{userId}/flashcards/{flashcardId}": {
+      "schema": { "$ref": "#/entities/Flashcard" },
+      "description": "Spaced repetition flashcards."
+    },
+    "/users/{userId}/focusSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/FocusSession" },
+      "description": "Logged solo and collaborative focus sessions."
+    },
+    "/focusRooms/{roomId}": {
+      "schema": { "$ref": "#/entities/FocusRoom" },
+      "description": "Collaborative public and password-protected private study rooms."
+    },
+    "/focusRooms/{roomId}/secrets/{lockId}": {
+      "schema": { "$ref": "#/entities/RoomLock" },
+      "description": "Write-only password hash for private focus rooms."
+    },
+    "/focusRooms/{roomId}/passes/{userId}": {
+      "schema": { "$ref": "#/entities/RoomPass" },
+      "description": "Private room password verification proof."
+    },
+    "/focusRooms/{roomId}/participants/{participantId}": {
+      "schema": { "$ref": "#/entities/RoomParticipant" },
+      "description": "Active participants inside a focus room."
+    },
+    "/focusRooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/RoomMessage" },
+      "description": "Quiet study check-ins inside a focus room."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Studora",
+  "description": "A clean, cozy Pinterest-inspired study workspace with tasks, focus timers, ambient noise, collaborative study rooms, syllabus PDF flashcard generation, and spaced repetition.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

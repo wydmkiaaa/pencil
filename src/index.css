@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+:root {
+  --font-display: "Nunito", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "Nunito", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Default: Warm Stone (clean white & deep gray Pinterest aesthetic) */
+  --pastel-canvas: #faf9f7;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #f2f0ec;
+  --pastel-soft-hover: #e8e5df;
+  --pastel-border: #e5e2dc;
+  --pastel-ink: #1f2428;
+  --pastel-muted: #626970;
+  --pastel-accent: #272c30;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #eae7e0;
+}
+
+[data-theme="stone"] {
+  --pastel-canvas: #faf9f7;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #f2f0ec;
+  --pastel-soft-hover: #e8e5df;
+  --pastel-border: #e5e2dc;
+  --pastel-ink: #1f2428;
+  --pastel-muted: #626970;
+  --pastel-accent: #272c30;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #eae7e0;
+}
+
+[data-theme="sage"] {
+  --pastel-canvas: #f5f8f6;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #e8f0eb;
+  --pastel-soft-hover: #dce7e0;
+  --pastel-border: #d7e3db;
+  --pastel-ink: #1e2621;
+  --pastel-muted: #58665d;
+  --pastel-accent: #4c6b58;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #dce8e0;
+}
+
+[data-theme="blush"] {
+  --pastel-canvas: #fbf6f6;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #f5e9ea;
+  --pastel-soft-hover: #eddce0;
+  --pastel-border: #ebdadd;
+  --pastel-ink: #292022;
+  --pastel-muted: #6d5c60;
+  --pastel-accent: #8f5b62;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #f2dfe2;
+}
+
+[data-theme="sky"] {
+  --pastel-canvas: #f5f8fb;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #e7eff6;
+  --pastel-soft-hover: #dbe6f0;
+  --pastel-border: #d6e2ec;
+  --pastel-ink: #1e252b;
+  --pastel-muted: #596570;
+  --pastel-accent: #486985;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #dde8f2;
+}
+
+[data-theme="lavender"] {
+  --pastel-canvas: #f8f7fb;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #eeeaf5;
+  --pastel-soft-hover: #e3ddef;
+  --pastel-border: #e0daec;
+  --pastel-ink: #23202a;
+  --pastel-muted: #635e6e;
+  --pastel-accent: #685987;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #e6e0f2;
+}
+
+[data-theme="butter"] {
+  --pastel-canvas: #fbf9f2;
+  --pastel-surface: #ffffff;
+  --pastel-soft: #f5f0de;
+  --pastel-soft-hover: #ede6ce;
+  --pastel-border: #eae2c9;
+  --pastel-ink: #28251d;
+  --pastel-muted: #6b6554;
+  --pastel-accent: #78673a;
+  --pastel-accent-ink: #ffffff;
+  --pastel-tint: #f0e8cd;
+}
+
+@layer base {
+  html {
+    scrollbar-gutter: stable;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    background-color: var(--pastel-canvas);
+    color: var(--pastel-ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 800;
+  }
+
+  button {
+    font-weight: 700;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
