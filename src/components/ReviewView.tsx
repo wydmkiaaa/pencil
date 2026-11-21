@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -79,13 +79,18 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   // --- Flashcards State ---
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
   const [chapterFilter, setChapterFilter] = useState<string>('all');
-  const [hardnessFilter, setHardnessFilter] = useState<'all' | DifficultyLevel>('all');
+  const [selectedDifficulties, setSelectedDifficulties] = useState<DifficultyLevel[]>([
+    'hard',
+    'medium',
+    'easy',
+  ]);
   const [sortOrder, setSortOrder] = useState<'priority' | 'due'>('priority');
   const [practiceAll, setPracticeAll] = useState(false);
   const [flipped, setFlipped] = useState(false);
   const [reviewedInSession, setReviewedInSession] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [customNextDays, setCustomNextDays] = useState('');
+  const [fcError, setFcError] = useState<string | null>(null);
 
   // Interval Settings UI inside Review
   const savedIntervals: ReviewIntervalConfig = profile.reviewIntervals || DEFAULT_REVIEW_INTERVALS;
@@ -100,6 +105,10 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   const [fcTimerRunning, setFcTimerRunning] = useState(false);
   const [fcSeconds, setFcSeconds] = useState(0);
   const [fcTimeStatus, setFcTimeStatus] = useState<string | null>(null);
+  const [practicedIdsThisRound, setPracticedIdsThisRound] = useState<string[]>([]);
+  const lastFcActivityRef = useRef<number>(Date.now());
+  const fcSecondsRef = useRef(0);
+  fcSecondsRef.current = fcSeconds;
 
   // --- Blurting State ---
   const [blurtSourceMode, setBlurtSourceMode] = useState<BlurtSourceMode>('chapter');
@@ -159,26 +168,62 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     setChapterFilter('all');
   }, [subjectFilter]);
 
-  // Timers
-  useEffect(() => {
-    if (!fcTimerRunning || reviewTab !== 'flashcards') return;
-    const id = window.setInterval(() => setFcSeconds((s) => s + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [fcTimerRunning, reviewTab]);
+  const selectedDifficultyKey = useMemo(
+    () => [...selectedDifficulties].sort().join(','),
+    [selectedDifficulties],
+  );
+
+  const toggleDifficulty = (diff: DifficultyLevel) => {
+    setSelectedDifficulties((prev) => {
+      if (prev.includes(diff)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((d) => d !== diff);
+      }
+      if (prev.length >= 3) return prev;
+      return [...prev, diff];
+    });
+    setFlipped(false);
+  };
 
   useEffect(() => {
-    if (!blurtTimerRunning || reviewTab !== 'blurting') return;
-    const id = window.setInterval(() => setBlurtSeconds((s) => s + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [blurtTimerRunning, reviewTab]);
+    setPracticedIdsThisRound([]);
+  }, [subjectFilter, chapterFilter, selectedDifficultyKey, practiceAll]);
+
+  const scopeMatchingCards = useMemo(
+    () =>
+      flashcards.filter((c) => {
+        if (subjectFilter !== 'all' && c.subjectId !== subjectFilter) return false;
+        if (chapterFilter !== 'all' && c.chapterId !== chapterFilter) return false;
+        return true;
+      }),
+    [flashcards, subjectFilter, chapterFilter],
+  );
+
+  const difficultyCounts = useMemo(() => {
+    const counts: Record<DifficultyLevel, number> = { hard: 0, medium: 0, easy: 0 };
+    for (const c of scopeMatchingCards) {
+      counts[c.hardness || 'medium'] += 1;
+    }
+    return counts;
+  }, [scopeMatchingCards]);
+
+  const selectedScopeCount = useMemo(
+    () =>
+      scopeMatchingCards.filter((c) =>
+        selectedDifficulties.includes(c.hardness || 'medium'),
+      ).length,
+    [scopeMatchingCards, selectedDifficulties],
+  );
 
   const queue = useMemo(() => {
     const nowIso = new Date().toISOString();
-    const list = flashcards.filter((c) => {
-      if (subjectFilter !== 'all' && c.subjectId !== subjectFilter) return false;
-      if (chapterFilter !== 'all' && c.chapterId !== chapterFilter) return false;
-      if (hardnessFilter !== 'all' && (c.hardness || 'medium') !== hardnessFilter) return false;
-      if (!practiceAll && c.nextReviewAt > nowIso) return false;
+    const practicedSet = new Set(practicedIdsThisRound);
+    const list = scopeMatchingCards.filter((c) => {
+      if (practicedSet.has(c.id)) return false;
+      if (!selectedDifficulties.includes(c.hardness || 'medium')) return false;
+      if (!practiceAll && c.nextReviewAt > nowIso) {
+        return false;
+      }
       return true;
     });
 
@@ -196,63 +241,131 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       });
     }
     return [...list].sort((a, b) => a.nextReviewAt.localeCompare(b.nextReviewAt));
-  }, [flashcards, subjectFilter, chapterFilter, hardnessFilter, practiceAll, sortOrder]);
+  }, [
+    scopeMatchingCards,
+    selectedDifficulties,
+    practiceAll,
+    practicedIdsThisRound,
+    sortOrder,
+  ]);
 
   const currentCard = queue[0] || null;
   const activeSubject = currentCard ? subjectMap.get(currentCard.subjectId) : undefined;
   const activeCardChapter =
     currentCard && currentCard.chapterId ? chapterMap.get(currentCard.chapterId) : undefined;
 
-  const logFlashcardPracticeTime = async (seconds: number) => {
-    if (seconds < 5) return;
-    const subj = subjectFilter !== 'all' ? subjectMap.get(subjectFilter) : activeSubject;
-    const chap = chapterFilter !== 'all' ? chapterMap.get(chapterFilter) : undefined;
-    await logFocusSession(uid, {
-      mode: 'flashcards',
-      contextType: 'active_recall',
-      subjectId: subj?.id || '',
-      subjectName: subj?.name || 'All Subjects',
-      subjectColor: subj?.color || '#4B5563',
-      chapterId: chap?.id || '',
-      chapterTitle: chap?.title || '',
-      durationSeconds: seconds,
-      ambientSound,
-      completedAt: new Date().toISOString(),
-      dateKey: getDateKey(),
-    });
-    setFcTimeStatus(`Logged ${formatDurationShort(seconds)} active recall.`);
-  };
+  const logFlashcardPracticeTime = useCallback(
+    async (seconds: number, reason?: string) => {
+      if (seconds < 5) return;
+      const subj = subjectFilter !== 'all' ? subjectMap.get(subjectFilter) : activeSubject;
+      const chap = chapterFilter !== 'all' ? chapterMap.get(chapterFilter) : undefined;
+      await logFocusSession(uid, {
+        mode: 'flashcards',
+        contextType: 'active_recall',
+        subjectId: subj?.id || '',
+        subjectName: subj?.name || 'All Subjects',
+        subjectColor: subj?.color || '#4B5563',
+        chapterId: chap?.id || '',
+        chapterTitle: chap?.title || '',
+        durationSeconds: seconds,
+        ambientSound,
+        completedAt: new Date().toISOString(),
+        dateKey: getDateKey(),
+      });
+      setFcTimeStatus(
+        reason || `Logged ${formatDurationShort(seconds)} active recall.`,
+      );
+    },
+    [uid, subjectFilter, chapterFilter, subjectMap, chapterMap, activeSubject, ambientSound],
+  );
+
+  // Flashcard practice timer tick + 90s inactivity auto-stop
+  useEffect(() => {
+    if (!fcTimerRunning || reviewTab !== 'flashcards') return;
+    const id = window.setInterval(() => {
+      if (Date.now() - lastFcActivityRef.current >= 90_000) {
+        const elapsed = fcSecondsRef.current;
+        setFcTimerRunning(false);
+        setFcSeconds(0);
+        if (elapsed >= 5) {
+          void logFlashcardPracticeTime(
+            elapsed,
+            `Timer stopped after inactivity · logged ${formatDurationShort(elapsed)}.`,
+          );
+        } else {
+          setFcTimeStatus('Timer paused automatically due to inactivity.');
+        }
+        return;
+      }
+      setFcSeconds((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [fcTimerRunning, reviewTab, logFlashcardPracticeTime]);
+
+  // Automatically stop & log timer whenever queue finishes or user switches away from Flashcards
+  useEffect(() => {
+    const shouldAutoStop = queue.length === 0 || reviewTab !== 'flashcards';
+    if (!shouldAutoStop) return;
+    if (!fcTimerRunning && fcSeconds === 0) return;
+
+    const elapsed = fcSeconds;
+    setFcTimerRunning(false);
+    setFcSeconds(0);
+    if (elapsed >= 5) {
+      void logFlashcardPracticeTime(elapsed);
+    }
+  }, [queue.length, reviewTab, fcTimerRunning, fcSeconds, logFlashcardPracticeTime]);
+
+  useEffect(() => {
+    if (!blurtTimerRunning || reviewTab !== 'blurting') return;
+    const id = window.setInterval(() => setBlurtSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [blurtTimerRunning, reviewTab]);
 
   const handleGrade = async (rating: ReviewRating) => {
     if (!currentCard || submitting) return;
-    if (!fcTimerRunning && fcSeconds === 0) {
+    setFcError(null);
+    lastFcActivityRef.current = Date.now();
+    const gradedId = currentCard.id;
+    const isLastInQueue = queue.length === 1;
+    let finalSecondsToLog = 0;
+
+    if (isLastInQueue) {
+      finalSecondsToLog = fcSecondsRef.current;
+      setFcTimerRunning(false);
+      setFcSeconds(0);
+    } else if (!fcTimerRunning && fcSeconds === 0) {
       setFcTimerRunning(true);
     }
+
+    const overrideNum = Number(customNextDays);
+    const overrideDays =
+      customNextDays.trim() && !Number.isNaN(overrideNum) && overrideNum >= 1
+        ? overrideNum
+        : undefined;
+    const nextSchedule = calculateFlashcardReviewUpdate(
+      currentCard,
+      rating,
+      savedIntervals,
+      overrideDays,
+    );
+
+    // Immediately mark card done in this round so it never repeats in the queue
+    setPracticedIdsThisRound((prev) => (prev.includes(gradedId) ? prev : [...prev, gradedId]));
+    setFlipped(false);
+    setCustomNextDays('');
+    setReviewedInSession((prev) => prev + 1);
+
     setSubmitting(true);
     try {
-      const overrideNum = Number(customNextDays);
-      const overrideDays =
-        customNextDays.trim() && !Number.isNaN(overrideNum) && overrideNum >= 1
-          ? overrideNum
-          : undefined;
-      const nextSchedule = calculateFlashcardReviewUpdate(
-        currentCard,
-        rating,
-        savedIntervals,
-        overrideDays,
-      );
-      await updateFlashcardSchedule(uid, currentCard.id, nextSchedule);
-      setFlipped(false);
-      setCustomNextDays('');
-      setReviewedInSession((prev) => prev + 1);
+      await updateFlashcardSchedule(uid, gradedId, nextSchedule);
 
-      // If this was the last card in queue and timer ran >= 5s, log active recall automatically
-      if (queue.length === 1 && fcSeconds >= 5) {
-        setFcTimerRunning(false);
-        const secondsToLog = fcSeconds;
-        setFcSeconds(0);
-        await logFlashcardPracticeTime(secondsToLog);
+      if (isLastInQueue && finalSecondsToLog >= 5) {
+        await logFlashcardPracticeTime(finalSecondsToLog);
       }
+    } catch (err) {
+      console.error('Failed to update flashcard schedule:', err);
+      setFcError('Could not save your rating to cloud sync, though this card was marked done for this round.');
     } finally {
       setSubmitting(false);
     }
@@ -366,52 +479,32 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               : effectiveSourceLabel,
         }),
       });
-      const data = (await res.json()) as {
+      const rawText = await res.text();
+      let data: {
         summary?: string;
         strongPoints?: string[];
         weakPoints?: Array<{ topic: string; gap: string; suggestedReview: string }>;
         missedKeyFacts?: string[];
         error?: string;
-      };
+      } = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as typeof data;
+        } catch {
+          throw new Error(
+            res.ok
+              ? 'Received an unexpected response format from AI blurt review.'
+              : `AI blurt review failed (${res.status}). Please try again.`,
+          );
+        }
+      }
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to review blurt.');
+        throw new Error(data.error || `Failed to review blurt (${res.status}).`);
       }
 
       const dateKey = getDateKey();
-      const blurtId = await createBlurtSession(uid, {
-        subjectId: selectedBlurtSubject?.id || '',
-        subjectName: selectedBlurtSubject?.name || 'General Study',
-        chapterId: blurtSourceMode === 'chapter' ? selectedBlurtChapter?.id || '' : '',
-        chapterTitle: blurtSourceMode === 'chapter' ? selectedBlurtChapter?.title || '' : '',
-        sourceLabel: effectiveSourceLabel,
-        blurtText: blurtText.trim(),
-        durationSeconds: recordedSeconds,
-        summary: data.summary || '',
-        strongPoints: data.strongPoints || [],
-        weakPoints: data.weakPoints || [],
-        missedKeyFacts: data.missedKeyFacts || [],
-        dateKey,
-      });
-
-      await logFocusSession(uid, {
-        mode: 'blurting',
-        contextType: 'active_recall',
-        subjectId: selectedBlurtSubject?.id || '',
-        subjectName: selectedBlurtSubject?.name || 'General Study',
-        subjectColor: selectedBlurtSubject?.color || '#4B5563',
-        chapterId: blurtSourceMode === 'chapter' ? selectedBlurtChapter?.id || '' : '',
-        chapterTitle:
-          blurtSourceMode === 'chapter'
-            ? selectedBlurtChapter?.title || ''
-            : effectiveSourceLabel,
-        durationSeconds: recordedSeconds,
-        ambientSound,
-        completedAt: new Date().toISOString(),
-        dateKey,
-      });
-
-      setActiveBlurtResult({
-        id: blurtId,
+      const pendingResult: BlurtSession = {
+        id: `temp_${Date.now()}`,
         ownerId: uid,
         subjectId: selectedBlurtSubject?.id || '',
         subjectName: selectedBlurtSubject?.name || 'General Study',
@@ -426,9 +519,49 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         missedKeyFacts: data.missedKeyFacts || [],
         cardsGeneratedCount: 0,
         dateKey,
-      });
+      };
+      setActiveBlurtResult(pendingResult);
       setWeakCardSubjectId(selectedBlurtSubject?.id || subjects[0]?.id || '');
       setBlurtSeconds(0);
+
+      try {
+        const blurtId = await createBlurtSession(uid, {
+          subjectId: pendingResult.subjectId,
+          subjectName: pendingResult.subjectName,
+          chapterId: pendingResult.chapterId,
+          chapterTitle: pendingResult.chapterTitle,
+          sourceLabel: pendingResult.sourceLabel,
+          blurtText: pendingResult.blurtText,
+          durationSeconds: recordedSeconds,
+          summary: pendingResult.summary,
+          strongPoints: pendingResult.strongPoints,
+          weakPoints: pendingResult.weakPoints,
+          missedKeyFacts: pendingResult.missedKeyFacts,
+          dateKey,
+        });
+
+        await logFocusSession(uid, {
+          mode: 'blurting',
+          contextType: 'active_recall',
+          subjectId: pendingResult.subjectId,
+          subjectName: pendingResult.subjectName,
+          subjectColor: selectedBlurtSubject?.color || '#4B5563',
+          chapterId: pendingResult.chapterId,
+          chapterTitle:
+            blurtSourceMode === 'chapter'
+              ? selectedBlurtChapter?.title || ''
+              : effectiveSourceLabel,
+          durationSeconds: recordedSeconds,
+          ambientSound,
+          completedAt: new Date().toISOString(),
+          dateKey,
+        });
+
+        setActiveBlurtResult({ ...pendingResult, id: blurtId });
+      } catch (saveErr) {
+        console.error('Failed to save blurt session to Firestore:', saveErr);
+        setBlurtError('AI analysis succeeded, but saving to your session history failed. Please try again or check your connection.');
+      }
     } catch (err) {
       setBlurtError(err instanceof Error ? err.message : 'AI blurt review failed.');
     } finally {
@@ -453,12 +586,24 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           cardCount: weakCardCount,
         }),
       });
-      const data = (await res.json()) as {
+      const rawText = await res.text();
+      let data: {
         flashcards?: Array<{ front: string; back: string }>;
         error?: string;
-      };
+      } = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as typeof data;
+        } catch {
+          throw new Error(
+            res.ok
+              ? 'Received an unexpected response format while generating flashcards.'
+              : `Weak-point flashcard generation failed (${res.status}). Please try again.`,
+          );
+        }
+      }
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate weak-point flashcards.');
+        throw new Error(data.error || `Failed to generate weak-point flashcards (${res.status}).`);
       }
 
       const targetSubjId = weakCardSubjectId || session.subjectId || subjects[0]?.id || 'general';
@@ -474,11 +619,13 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             hardness: 'hard' as DifficultyLevel,
           })),
         );
-        await updateBlurtSessionCardsCount(
-          uid,
-          session.id,
-          (session.cardsGeneratedCount || 0) + generated.length,
-        );
+        if (!session.id.startsWith('temp_')) {
+          await updateBlurtSessionCardsCount(
+            uid,
+            session.id,
+            (session.cardsGeneratedCount || 0) + generated.length,
+          );
+        }
         if (activeBlurtResult?.id === session.id) {
           setActiveBlurtResult({
             ...activeBlurtResult,
@@ -572,22 +719,49 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                 />
               )}
 
-              <PastelSelect
-                value={hardnessFilter}
-                onChange={(val) => {
-                  setHardnessFilter(val as 'all' | DifficultyLevel);
-                  setFlipped(false);
-                }}
-                ariaLabel="Filter by hardness"
-                variant="pill"
-                className="min-w-[115px]"
-                options={[
-                  { value: 'all', label: 'All Hardness' },
-                  { value: 'hard', label: 'Hard Only' },
-                  { value: 'medium', label: 'Mid Only' },
-                  { value: 'easy', label: 'Easy Only' },
-                ]}
-              />
+              {/* Multi-select difficulty filter (up to 3 difficulties at a time) */}
+              <div
+                className="inline-flex items-center gap-1 p-1 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-surface)]"
+                role="group"
+                aria-label="Filter by difficulty (up to 3)"
+              >
+                {(
+                  [
+                    { id: 'hard' as DifficultyLevel, label: 'Hard' },
+                    { id: 'medium' as DifficultyLevel, label: 'Mid' },
+                    { id: 'easy' as DifficultyLevel, label: 'Easy' },
+                  ]
+                ).map((d) => {
+                  const active = selectedDifficulties.includes(d.id);
+                  return (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => toggleDifficulty(d.id)}
+                      aria-pressed={active}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-full transition-colors cursor-pointer whitespace-nowrap ${
+                        active
+                          ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)]'
+                          : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] hover:bg-[var(--pastel-soft)]'
+                      }`}
+                    >
+                      {d.label}
+                    </button>
+                  );
+                })}
+                {selectedDifficulties.length < 3 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDifficulties(['hard', 'medium', 'easy']);
+                      setFlipped(false);
+                    }}
+                    className="px-2 py-1 text-[11px] font-bold text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] cursor-pointer whitespace-nowrap"
+                  >
+                    All 3
+                  </button>
+                )}
+              </div>
 
               <PastelSelect
                 value={sortOrder}
@@ -714,10 +888,12 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  lastFcActivityRef.current = Date.now();
                   setFcTimeStatus(null);
                   setFcTimerRunning((r) => !r);
                 }}
-                className="px-3 py-1 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] font-bold inline-flex items-center gap-1 cursor-pointer"
+                disabled={!currentCard && !fcTimerRunning}
+                className="px-3 py-1 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-45"
               >
                 {fcTimerRunning ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
                 <span>{fcTimerRunning ? 'Pause' : 'Track Time'}</span>
@@ -735,27 +911,99 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             </div>
           </div>
 
+          {fcError && (
+            <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50/70 border border-red-200 rounded-2xl p-3">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{fcError}</span>
+            </div>
+          )}
+
           {!currentCard ? (
-            <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-12 text-center space-y-4">
+            <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-8 md:p-10 text-center space-y-5">
               <CheckCircle2 className="w-8 h-8 mx-auto text-[var(--pastel-muted)]" />
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <h2 className="text-lg font-extrabold">
-                  {flashcards.length === 0 ? 'No flashcards yet' : 'You are all caught up'}
+                  {flashcards.length === 0
+                    ? 'No flashcards yet'
+                    : practicedIdsThisRound.length > 0
+                      ? 'First round complete'
+                      : 'You are all caught up'}
                 </h2>
-                <p className="text-xs text-[var(--pastel-muted)] max-w-md mx-auto">
+                <p className="text-xs text-[var(--pastel-muted)] max-w-md mx-auto leading-relaxed">
                   {flashcards.length === 0
                     ? 'Add flashcards in Syllabus chapters or generate them from Blurting weak points.'
-                    : 'No cards match this subject or schedule filter right now. Switch to "Showing All Cards" to practice any time.'}
+                    : practicedIdsThisRound.length > 0
+                      ? `You finished ${practicedIdsThisRound.length} ${practicedIdsThisRound.length === 1 ? 'card' : 'cards'} in this round and practice stopped automatically. Pick below if you want to practice all cards or specific difficulties.`
+                      : 'No due cards match this filter right now. You can practice all cards or choose up to 3 difficulties below.'}
                 </p>
               </div>
-              {flashcards.length > 0 && !practiceAll && (
-                <button
-                  type="button"
-                  onClick={() => setPracticeAll(true)}
-                  className="px-5 py-2.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold cursor-pointer"
-                >
-                  Practice All Matching Cards
-                </button>
+
+              {scopeMatchingCards.length > 0 && (
+                <div className="max-w-md mx-auto pt-2 space-y-4">
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-[var(--pastel-muted)]">
+                      Choose Difficulties (up to 3)
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      {(
+                        [
+                          { id: 'hard' as DifficultyLevel, label: 'Hard', count: difficultyCounts.hard },
+                          { id: 'medium' as DifficultyLevel, label: 'Mid', count: difficultyCounts.medium },
+                          { id: 'easy' as DifficultyLevel, label: 'Easy', count: difficultyCounts.easy },
+                        ]
+                      ).map((d) => {
+                        const active = selectedDifficulties.includes(d.id);
+                        return (
+                          <button
+                            key={d.id}
+                            type="button"
+                            onClick={() => toggleDifficulty(d.id)}
+                            aria-pressed={active}
+                            className={`px-3.5 py-1.5 rounded-full border text-xs font-bold transition-colors cursor-pointer ${
+                              active
+                                ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border-[var(--pastel-accent)]'
+                                : 'bg-[var(--pastel-canvas)] text-[var(--pastel-muted)] border-[var(--pastel-border)] hover:text-[var(--pastel-ink)]'
+                            }`}
+                          >
+                            {d.label} ({d.count})
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={selectedScopeCount === 0}
+                      onClick={() => {
+                        lastFcActivityRef.current = Date.now();
+                        setFcError(null);
+                        setFlipped(false);
+                        setPracticeAll(true);
+                        setPracticedIdsThisRound([]);
+                      }}
+                      className="px-5 py-2.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold cursor-pointer disabled:opacity-45"
+                    >
+                      Practice Selected ({selectedScopeCount})
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        lastFcActivityRef.current = Date.now();
+                        setFcError(null);
+                        setFlipped(false);
+                        setSelectedDifficulties(['hard', 'medium', 'easy']);
+                        setPracticeAll(true);
+                        setPracticedIdsThisRound([]);
+                      }}
+                      className="px-5 py-2.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)] text-xs font-bold cursor-pointer"
+                    >
+                      Practice All Cards ({scopeMatchingCards.length})
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           ) : (
@@ -810,6 +1058,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  lastFcActivityRef.current = Date.now();
                   if (!fcTimerRunning && fcSeconds === 0) setFcTimerRunning(true);
                   setFlipped((prev) => !prev);
                 }}
@@ -880,6 +1129,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      lastFcActivityRef.current = Date.now();
                       if (!fcTimerRunning && fcSeconds === 0) setFcTimerRunning(true);
                       setFlipped(true);
                     }}

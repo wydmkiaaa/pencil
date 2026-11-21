@@ -6,7 +6,7 @@ import {
   signInWithPopup,
   updateProfile,
 } from 'firebase/auth';
-import { ArrowRight, BookOpen, Eye, EyeOff } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { auth, googleProvider } from '../lib/firebase';
 
 export const AuthGate: React.FC = () => {
@@ -87,10 +87,7 @@ export const AuthGate: React.FC = () => {
   return (
     <div className="min-h-screen bg-[var(--pastel-canvas)] text-[var(--pastel-ink)] flex items-center justify-center p-4 md:p-8">
       <div className="max-w-md w-full bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl shadow-sm p-8 md:p-10 space-y-6">
-        <div className="flex items-center gap-2.5 text-base font-extrabold tracking-tight font-display">
-          <span className="w-9 h-9 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] flex items-center justify-center">
-            <BookOpen className="w-4 h-4" />
-          </span>
+        <div className="text-base font-extrabold tracking-tight font-display">
           <span>Pencil</span>
         </div>
 

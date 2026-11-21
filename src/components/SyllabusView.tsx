@@ -470,13 +470,25 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
           cardCount,
         }),
       });
-      const data = (await res.json()) as {
+      const rawText = await res.text();
+      let data: {
         summaryNotes?: string;
         flashcards?: Array<{ front: string; back: string }>;
         error?: string;
-      };
+      } = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as typeof data;
+        } catch {
+          throw new Error(
+            res.ok
+              ? 'Received an unexpected response format from AI generator.'
+              : `AI generation failed (${res.status}). Please try again.`,
+          );
+        }
+      }
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate study material.');
+        throw new Error(data.error || `Failed to generate study material (${res.status}).`);
       }
 
       const appendedNotes = [

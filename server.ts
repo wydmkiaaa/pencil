@@ -4,7 +4,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,11 +19,128 @@ function getAiClient(): GoogleGenAI | null {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
+      timeout: 20000,
+      retryOptions: {
+        attempts: 1,
+      },
       headers: {
         'User-Agent': 'aistudio-build',
       },
     },
   });
+}
+
+function extractReadableAiError(err: unknown): { status: number; message: string; transient: boolean } {
+  const raw = err instanceof Error ? err.message : String(err);
+  let status = 500;
+  let message = raw || 'AI request failed.';
+
+  // Try parsing JSON payloads embedded in SDK errors
+  try {
+    const parsed = JSON.parse(raw) as { error?: { code?: number; message?: string; status?: string } };
+    if (parsed?.error) {
+      if (typeof parsed.error.code === 'number') status = parsed.error.code;
+      if (typeof parsed.error.message === 'string') message = parsed.error.message;
+    }
+  } catch {
+    const codeMatch = raw.match(/\b(400|401|403|404|429|500|502|503|504)\b/);
+    if (codeMatch) status = Number(codeMatch[1]);
+  }
+
+  const lower = `${raw} ${message}`.toLowerCase();
+  const isTimeout =
+    (err instanceof Error && err.name === 'AbortError') ||
+    lower.includes('aborted') ||
+    lower.includes('timeout') ||
+    lower.includes('timed out');
+
+  if (isTimeout && status === 500) {
+    status = 504;
+    message = 'The AI model took too long to respond.';
+  }
+
+  const transient =
+    isTimeout ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    lower.includes('unavailable') ||
+    lower.includes('high demand') ||
+    lower.includes('overloaded') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('try again');
+
+  return { status, message, transient };
+}
+
+function parseJsonResponse<T>(rawText: string | undefined): T {
+  let text = (rawText ?? '').trim();
+  if (text.startsWith('```')) {
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  }
+  return JSON.parse(text || '{}') as T;
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let primaryCooldownUntil = 0;
+
+async function generateJsonWithFallback<T>(
+  ai: GoogleGenAI,
+  params: {
+    contents: string;
+    systemInstruction: string;
+    responseSchema: Record<string, unknown>;
+  },
+): Promise<T> {
+  const skipPrimary = Date.now() < primaryCooldownUntil;
+  const attempts: Array<{ model: string; useLowThinking: boolean; delayMs: number }> = [
+    ...(skipPrimary
+      ? []
+      : [{ model: 'gemini-4-hydrogen', useLowThinking: true, delayMs: 0 }]),
+    { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayMs: 0 },
+    { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayMs: 700 },
+  ];
+
+  let lastError: unknown = null;
+
+  for (const attempt of attempts) {
+    if (attempt.delayMs > 0) {
+      await sleep(attempt.delayMs);
+    }
+    try {
+      const response = await ai.models.generateContent({
+        model: attempt.model,
+        contents: params.contents,
+        config: {
+          systemInstruction: params.systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: params.responseSchema,
+          maxOutputTokens: 2048,
+          ...(attempt.useLowThinking
+            ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+            : {}),
+        },
+      });
+      return parseJsonResponse<T>(response.text);
+    } catch (err) {
+      lastError = err;
+      const info = extractReadableAiError(err);
+      if (attempt.model === 'gemini-4-hydrogen' && (info.transient || info.status === 404)) {
+        primaryCooldownUntil = Date.now() + 3 * 60_000;
+      }
+      // Do not retry non-transient auth/invalid-request errors on the same model
+      if (!info.transient && info.status !== 404) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('AI service is temporarily unavailable.');
 }
 
 async function startServer() {
@@ -67,48 +184,41 @@ async function startServer() {
         boundedText,
       ].join('\n\n');
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          systemInstruction:
-            'You are an expert curriculum designer creating clear study notes and spaced-repetition flashcards strictly grounded in the provided study text.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              summaryNotes: {
-                type: Type.STRING,
-                description: 'Well-organized study notes summarizing key definitions, concepts, and takeaways in clean plain text / markdown bullets.',
-              },
-              flashcards: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    front: {
-                      type: Type.STRING,
-                      description: 'The question or concept prompt on the front of the flashcard.',
-                    },
-                    back: {
-                      type: Type.STRING,
-                      description: 'The concise, accurate answer on the back of the flashcard.',
-                    },
-                  },
-                  required: ['front', 'back'],
-                },
-              },
-            },
-            required: ['summaryNotes', 'flashcards'],
-          },
-        },
-      });
-
-      const rawJson = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson) as {
+      const parsed = await generateJsonWithFallback<{
         summaryNotes?: string;
         flashcards?: Array<{ front: string; back: string }>;
-      };
+      }>(ai, {
+        contents: prompt,
+        systemInstruction:
+          'You are an expert curriculum designer creating clear study notes and spaced-repetition flashcards strictly grounded in the provided study text.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summaryNotes: {
+              type: Type.STRING,
+              description: 'Well-organized study notes summarizing key definitions, concepts, and takeaways in clean plain text / markdown bullets.',
+            },
+            flashcards: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  front: {
+                    type: Type.STRING,
+                    description: 'The question or concept prompt on the front of the flashcard.',
+                  },
+                  back: {
+                    type: Type.STRING,
+                    description: 'The concise, accurate answer on the back of the flashcard.',
+                  },
+                },
+                required: ['front', 'back'],
+              },
+            },
+          },
+          required: ['summaryNotes', 'flashcards'],
+        },
+      });
 
       res.json({
         summaryNotes: typeof parsed.summaryNotes === 'string' ? parsed.summaryNotes : '',
@@ -123,8 +233,10 @@ async function startServer() {
       });
     } catch (error) {
       console.error('AI flashcard generation error:', error);
-      const message = error instanceof Error ? error.message : 'Failed to generate flashcards.';
-      res.status(500).json({ error: message });
+      const info = extractReadableAiError(error);
+      res.status(info.status >= 400 && info.status < 600 ? info.status : 500).json({
+        error: info.message || 'Failed to generate flashcards.',
+      });
     }
   });
 
@@ -160,60 +272,53 @@ async function startServer() {
         `Topic / Chapter: ${chapterTitle || 'Study Material'}`,
         'Compare the learner’s active-recall blurt written from memory against the reference notes below.',
         'Identify specific strong points they accurately recalled, specific weak points/gaps or inaccuracies, and missed key facts.',
-        'Reference Material:\n' + cleanRef.slice(0, 28000),
-        'Learner Blurt (written from memory):\n' + cleanBlurt.slice(0, 18000),
+        'Reference Material:\n' + cleanRef.slice(0, 18000),
+        'Learner Blurt (written from memory):\n' + cleanBlurt.slice(0, 12000),
       ].join('\n\n');
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          systemInstruction:
-            'You are a constructive study tutor evaluating active-recall blurting strictly against the provided reference notes. Be encouraging, specific, and accurate.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              summary: {
-                type: Type.STRING,
-                description: '2-3 sentence summary comparing the learner blurt to the reference material.',
-              },
-              strongPoints: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'Concepts or facts the learner recalled accurately (3 to 8 items).',
-              },
-              weakPoints: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    topic: { type: Type.STRING, description: 'Short concept/subtopic name.' },
-                    gap: { type: Type.STRING, description: 'What was missing, incomplete, or inaccurate.' },
-                    suggestedReview: { type: Type.STRING, description: 'Concrete correction or key detail from notes.' },
-                  },
-                  required: ['topic', 'gap', 'suggestedReview'],
-                },
-                description: 'Weak points or missing areas needing review (2 to 8 items).',
-              },
-              missedKeyFacts: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'Specific facts, formulas, or terms omitted in the blurt (up to 8 items).',
-              },
-            },
-            required: ['summary', 'strongPoints', 'weakPoints', 'missedKeyFacts'],
-          },
-        },
-      });
-
-      const rawJson = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson) as {
+      const parsed = await generateJsonWithFallback<{
         summary?: string;
         strongPoints?: string[];
         weakPoints?: Array<{ topic: string; gap: string; suggestedReview: string }>;
         missedKeyFacts?: string[];
-      };
+      }>(ai, {
+        contents: prompt,
+        systemInstruction:
+          'You are a constructive study tutor evaluating active-recall blurting strictly against the provided reference notes. Be encouraging, specific, and accurate.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summary: {
+              type: Type.STRING,
+              description: '2-3 sentence summary comparing the learner blurt to the reference material.',
+            },
+            strongPoints: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Concepts or facts the learner recalled accurately (3 to 8 items).',
+            },
+            weakPoints: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  topic: { type: Type.STRING, description: 'Short concept/subtopic name.' },
+                  gap: { type: Type.STRING, description: 'What was missing, incomplete, or inaccurate.' },
+                  suggestedReview: { type: Type.STRING, description: 'Concrete correction or key detail from notes.' },
+                },
+                required: ['topic', 'gap', 'suggestedReview'],
+              },
+              description: 'Weak points or missing areas needing review (2 to 8 items).',
+            },
+            missedKeyFacts: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Specific facts, formulas, or terms omitted in the blurt (up to 8 items).',
+            },
+          },
+          required: ['summary', 'strongPoints', 'weakPoints', 'missedKeyFacts'],
+        },
+      });
 
       res.json({
         summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 1900) : '',
@@ -242,8 +347,10 @@ async function startServer() {
       });
     } catch (error) {
       console.error('AI blurt review error:', error);
-      const message = error instanceof Error ? error.message : 'Failed to review blurt.';
-      res.status(500).json({ error: message });
+      const info = extractReadableAiError(error);
+      res.status(info.status >= 400 && info.status < 600 ? info.status : 500).json({
+        error: info.message || 'Failed to review blurt.',
+      });
     }
   });
 
@@ -287,37 +394,30 @@ async function startServer() {
         .filter(Boolean)
         .join('\n\n');
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
+      const parsed = await generateJsonWithFallback<{
+        flashcards?: Array<{ front: string; back: string }>;
+      }>(ai, {
         contents: prompt,
-        config: {
-          systemInstruction:
-            'Create crisp, high-yield flashcards targeting only the missed concepts and weak points. Keep fronts <= 200 chars and backs <= 500 chars.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              flashcards: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    front: { type: Type.STRING },
-                    back: { type: Type.STRING },
-                  },
-                  required: ['front', 'back'],
+        systemInstruction:
+          'Create crisp, high-yield flashcards targeting only the missed concepts and weak points. Keep fronts <= 200 chars and backs <= 500 chars.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            flashcards: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  front: { type: Type.STRING },
+                  back: { type: Type.STRING },
                 },
+                required: ['front', 'back'],
               },
             },
-            required: ['flashcards'],
           },
+          required: ['flashcards'],
         },
       });
-
-      const rawJson = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawJson) as {
-        flashcards?: Array<{ front: string; back: string }>;
-      };
 
       res.json({
         flashcards: Array.isArray(parsed.flashcards)
@@ -331,8 +431,10 @@ async function startServer() {
       });
     } catch (error) {
       console.error('AI weakpoint flashcard error:', error);
-      const message = error instanceof Error ? error.message : 'Failed to generate weak-point flashcards.';
-      res.status(500).json({ error: message });
+      const info = extractReadableAiError(error);
+      res.status(info.status >= 400 && info.status < 600 ? info.status : 500).json({
+        error: info.message || 'Failed to generate weak-point flashcards.',
+      });
     }
   });
 
