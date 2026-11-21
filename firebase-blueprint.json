@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Private user profile, study preferences, and theme customization.",
+      "description": "Private user profile, study preferences, spaced repetition intervals, and theme customization.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -15,6 +15,7 @@
           "enum": ["stone", "sage", "blush", "sky", "lavender", "butter"]
         },
         "dailyGoalMinutes": { "type": "number" },
+        "reviewIntervals": { "type": "object" },
         "isPublic": { "type": "boolean" },
         "handle": { "type": "string", "minLength": 0, "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -24,13 +25,14 @@
     },
     "StudyTask": {
       "title": "StudyTask",
-      "description": "Personal study to-do task with priority level, status workflow, and reminder timestamp.",
+      "description": "Personal study to-do task with priority level, hardness level, status workflow, and reminder timestamp.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "title": { "type": "string", "minLength": 1, "maxLength": 200 },
         "notes": { "type": "string", "minLength": 0, "maxLength": 1000 },
         "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "hardness": { "type": "string", "enum": ["easy", "medium", "hard"] },
         "status": { "type": "string", "enum": ["not_started", "working", "completed"] },
         "subjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "dueAt": { "type": "string", "minLength": 0, "maxLength": 64 },
@@ -56,13 +58,15 @@
     },
     "Subject": {
       "title": "Subject",
-      "description": "Color-coded syllabus subject.",
+      "description": "Color-coded syllabus subject with priority and hardness ratings.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
         "color": { "type": "string", "minLength": 4, "maxLength": 24 },
         "description": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "hardness": { "type": "string", "enum": ["easy", "medium", "hard"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -70,13 +74,15 @@
     },
     "Chapter": {
       "title": "Chapter",
-      "description": "Syllabus chapter containing notes, video lecture links, and PDF metadata (no raw PDF stored).",
+      "description": "Syllabus chapter containing notes, tracked YouTube lecture progress, priority/hardness, and PDF metadata.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "subjectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "title": { "type": "string", "minLength": 1, "maxLength": 160 },
         "order": { "type": "number" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "hardness": { "type": "string", "enum": ["easy", "medium", "hard"] },
         "notes": { "type": "string", "minLength": 0, "maxLength": 50000 },
         "videoLectures": { "type": "array" },
         "pdfSources": { "type": "array" },
@@ -85,9 +91,23 @@
       },
       "required": ["ownerId", "subjectId", "title", "order", "notes", "videoLectures", "pdfSources", "createdAt", "updatedAt"]
     },
+    "ChapterPhoto": {
+      "title": "ChapterPhoto",
+      "description": "Compressed study photo or diagram attached to a syllabus chapter.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subjectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "chapterId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "dataUrl": { "type": "string", "minLength": 10, "maxLength": 350000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "subjectId", "chapterId", "title", "dataUrl", "createdAt"]
+    },
     "Flashcard": {
       "title": "Flashcard",
-      "description": "Spaced repetition flashcard linked to a subject and optional chapter.",
+      "description": "Spaced repetition flashcard linked to a subject and optional chapter with priority and hardness.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -95,6 +115,8 @@
         "chapterId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "front": { "type": "string", "minLength": 1, "maxLength": 1000 },
         "back": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "hardness": { "type": "string", "enum": ["easy", "medium", "hard"] },
         "repetitions": { "type": "number" },
         "intervalDays": { "type": "number" },
         "easeFactor": { "type": "number" },
@@ -105,19 +127,44 @@
       },
       "required": ["ownerId", "subjectId", "front", "back", "repetitions", "intervalDays", "easeFactor", "nextReviewAt", "createdAt", "updatedAt"]
     },
-    "FocusSession": {
-      "title": "FocusSession",
-      "description": "Completed solo, public room, or private room focus session log.",
+    "BlurtSession": {
+      "title": "BlurtSession",
+      "description": "Timed active-recall blurting session with AI strong/weak point evaluation.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "mode": { "type": "string", "enum": ["timer", "stopwatch"] },
-        "contextType": { "type": "string", "enum": ["solo", "public_room", "private_room"] },
+        "subjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "subjectName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "chapterId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "chapterTitle": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "sourceLabel": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "blurtText": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "durationSeconds": { "type": "number" },
+        "summary": { "type": "string", "minLength": 0, "maxLength": 2000 },
+        "strongPoints": { "type": "array" },
+        "weakPoints": { "type": "array" },
+        "missedKeyFacts": { "type": "array" },
+        "cardsGeneratedCount": { "type": "number" },
+        "dateKey": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "sourceLabel", "blurtText", "durationSeconds", "summary", "strongPoints", "weakPoints", "missedKeyFacts", "dateKey", "createdAt"]
+    },
+    "FocusSession": {
+      "title": "FocusSession",
+      "description": "Completed solo, focus room, flashcard, or blurting active recall session log.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "enum": ["timer", "stopwatch", "flashcards", "blurting"] },
+        "contextType": { "type": "string", "enum": ["solo", "public_room", "private_room", "active_recall"] },
         "roomId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "roomName": { "type": "string", "minLength": 0, "maxLength": 120 },
         "subjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "subjectName": { "type": "string", "minLength": 0, "maxLength": 100 },
         "subjectColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "chapterId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "chapterTitle": { "type": "string", "minLength": 0, "maxLength": 160 },
         "durationSeconds": { "type": "number" },
         "ambientSound": { "type": "string", "enum": ["none", "brown", "pink", "white", "rain", "forest"] },
         "completedAt": { "type": "string", "minLength": 10, "maxLength": 64 },
@@ -271,7 +318,7 @@
     },
     "/users/{userId}/tasks/{taskId}": {
       "schema": { "$ref": "#/entities/StudyTask" },
-      "description": "User personal tasks with priorities and reminders."
+      "description": "User personal tasks with priorities, hardness, and reminders."
     },
     "/users/{userId}/dailyGoals/{goalId}": {
       "schema": { "$ref": "#/entities/DailyGoal" },
@@ -279,19 +326,27 @@
     },
     "/users/{userId}/subjects/{subjectId}": {
       "schema": { "$ref": "#/entities/Subject" },
-      "description": "Color-coded syllabus subjects."
+      "description": "Color-coded syllabus subjects with priority and hardness."
     },
     "/users/{userId}/chapters/{chapterId}": {
       "schema": { "$ref": "#/entities/Chapter" },
-      "description": "Chapters under subjects with notes, lecture links, and PDF metadata."
+      "description": "Chapters under subjects with notes, lecture progress, and PDF metadata."
+    },
+    "/users/{userId}/chapterPhotos/{photoId}": {
+      "schema": { "$ref": "#/entities/ChapterPhoto" },
+      "description": "Compressed study photos attached to chapters."
     },
     "/users/{userId}/flashcards/{flashcardId}": {
       "schema": { "$ref": "#/entities/Flashcard" },
-      "description": "Spaced repetition flashcards."
+      "description": "Spaced repetition flashcards with priority and hardness."
+    },
+    "/users/{userId}/blurtSessions/{blurtId}": {
+      "schema": { "$ref": "#/entities/BlurtSession" },
+      "description": "Timed active-recall blurting sessions and AI feedback."
     },
     "/users/{userId}/focusSessions/{sessionId}": {
       "schema": { "$ref": "#/entities/FocusSession" },
-      "description": "Logged solo and collaborative focus sessions."
+      "description": "Logged solo, collaborative focus room, flashcard, and blurting study sessions."
     },
     "/focusRooms/{roomId}": {
       "schema": { "$ref": "#/entities/FocusRoom" },

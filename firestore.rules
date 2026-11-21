@@ -33,10 +33,19 @@ service cloud.firestore {
       return val is string && val.size() == 10 && val.matches('^\\d{4}-\\d{2}-\\d{2}$');
     }
 
+    function isValidReviewIntervals(obj) {
+      return obj is map
+        && obj.keys().hasAll(['hardDays', 'midDays', 'easyDays'])
+        && obj.keys().hasOnly(['hardDays', 'midDays', 'easyDays'])
+        && obj.hardDays is number && obj.hardDays >= 1 && obj.hardDays <= 365
+        && obj.midDays is number && obj.midDays >= 1 && obj.midDays <= 365
+        && obj.easyDays is number && obj.easyDays >= 1 && obj.easyDays <= 365;
+    }
+
     // --- Entity Validation Blueprints ---
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'displayName', 'pastelTheme', 'dailyGoalMinutes', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'isPublic', 'handle', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'isPublic', 'handle', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
@@ -45,6 +54,7 @@ service cloud.firestore {
         && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
         && data.pastelTheme in ['stone', 'sage', 'blush', 'sky', 'lavender', 'butter']
         && data.dailyGoalMinutes is number && data.dailyGoalMinutes >= 15 && data.dailyGoalMinutes <= 720
+        && (!('reviewIntervals' in data) || isValidReviewIntervals(data.reviewIntervals))
         && (!('isPublic' in data) || data.isPublic is bool)
         && (!('handle' in data) || (data.handle is string && data.handle.size() <= 32))
         && data.createdAt is timestamp
@@ -81,12 +91,13 @@ service cloud.firestore {
 
     function isValidStudyTask(data) {
       return data.keys().hasAll(['ownerId', 'title', 'priority', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'title', 'notes', 'priority', 'status', 'subjectId', 'dueAt', 'reminderAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'notes', 'priority', 'hardness', 'status', 'subjectId', 'dueAt', 'reminderAt', 'createdAt', 'updatedAt'])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000))
         && data.priority in ['low', 'medium', 'high']
+        && (!('hardness' in data) || data.hardness in ['easy', 'medium', 'hard'])
         && data.status in ['not_started', 'working', 'completed']
         && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
         && (!('dueAt' in data) || (data.dueAt is string && data.dueAt.size() <= 64))
@@ -109,34 +120,44 @@ service cloud.firestore {
 
     function isValidSubject(data) {
       return data.keys().hasAll(['ownerId', 'name', 'color', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'name', 'color', 'description', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'color', 'description', 'priority', 'hardness', 'createdAt', 'updatedAt'])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
         && data.color is string && data.color.size() >= 4 && data.color.size() <= 24
         && (!('description' in data) || (data.description is string && data.description.size() <= 400))
+        && (!('priority' in data) || data.priority in ['low', 'medium', 'high'])
+        && (!('hardness' in data) || data.hardness in ['easy', 'medium', 'hard'])
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
+    function isValidVideoLectureItem(item) {
+      return item is map
+        && item.keys().hasAll(['title', 'url'])
+        && item.keys().hasOnly(['id', 'title', 'url', 'totalSeconds', 'watchedSeconds', 'lastWatchedAt'])
+        && (!('id' in item) || (item.id is string && item.id.size() <= 64))
+        && item.title is string && item.title.size() <= 160
+        && item.url is string && item.url.size() <= 500
+        && (!('totalSeconds' in item) || (item.totalSeconds is number && item.totalSeconds >= 0 && item.totalSeconds <= 864000))
+        && (!('watchedSeconds' in item) || (item.watchedSeconds is number && item.watchedSeconds >= 0 && item.watchedSeconds <= 864000))
+        && (!('lastWatchedAt' in item) || (item.lastWatchedAt is string && item.lastWatchedAt.size() <= 64));
+    }
+
     function isValidChapter(data) {
       return data.keys().hasAll(['ownerId', 'subjectId', 'title', 'order', 'notes', 'videoLectures', 'pdfSources', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'subjectId', 'title', 'order', 'notes', 'videoLectures', 'pdfSources', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'subjectId', 'title', 'order', 'priority', 'hardness', 'notes', 'videoLectures', 'pdfSources', 'createdAt', 'updatedAt'])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
         && isValidId(data.subjectId)
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
         && data.order is number && data.order >= 0 && data.order <= 10000
+        && (!('priority' in data) || data.priority in ['low', 'medium', 'high'])
+        && (!('hardness' in data) || data.hardness in ['easy', 'medium', 'hard'])
         && data.notes is string && data.notes.size() <= 50000
-        && data.videoLectures is list && data.videoLectures.size() <= 20
-        && (data.videoLectures.size() == 0 || (
-          data.videoLectures[0] is map
-          && data.videoLectures[0].keys().hasAll(['title', 'url'])
-          && data.videoLectures[0].keys().hasOnly(['title', 'url'])
-          && data.videoLectures[0].title is string && data.videoLectures[0].title.size() <= 160
-          && data.videoLectures[0].url is string && data.videoLectures[0].url.size() <= 500
-        ))
-        && data.pdfSources is list && data.pdfSources.size() <= 10
+        && data.videoLectures is list && data.videoLectures.size() <= 30
+        && (data.videoLectures.size() == 0 || isValidVideoLectureItem(data.videoLectures[0]))
+        && data.pdfSources is list && data.pdfSources.size() <= 15
         && (data.pdfSources.size() == 0 || (
           data.pdfSources[0] is map
           && data.pdfSources[0].keys().hasAll(['fileName', 'pageCount', 'extractedAt'])
@@ -149,15 +170,29 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidChapterPhoto(data) {
+      return data.keys().hasAll(['ownerId', 'subjectId', 'chapterId', 'title', 'dataUrl', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'subjectId', 'chapterId', 'title', 'dataUrl', 'createdAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.subjectId)
+        && isValidId(data.chapterId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.dataUrl is string && data.dataUrl.size() >= 10 && data.dataUrl.size() <= 350000
+        && data.createdAt is timestamp;
+    }
+
     function isValidFlashcard(data) {
       return data.keys().hasAll(['ownerId', 'subjectId', 'front', 'back', 'repetitions', 'intervalDays', 'easeFactor', 'nextReviewAt', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'subjectId', 'chapterId', 'front', 'back', 'repetitions', 'intervalDays', 'easeFactor', 'nextReviewAt', 'lastReviewedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'subjectId', 'chapterId', 'front', 'back', 'priority', 'hardness', 'repetitions', 'intervalDays', 'easeFactor', 'nextReviewAt', 'lastReviewedAt', 'createdAt', 'updatedAt'])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
         && isValidId(data.subjectId)
         && (!('chapterId' in data) || (data.chapterId is string && data.chapterId.size() <= 128))
         && data.front is string && data.front.size() >= 1 && data.front.size() <= 1000
         && data.back is string && data.back.size() >= 1 && data.back.size() <= 2000
+        && (!('priority' in data) || data.priority in ['low', 'medium', 'high'])
+        && (!('hardness' in data) || data.hardness in ['easy', 'medium', 'hard'])
         && data.repetitions is number && data.repetitions >= 0 && data.repetitions <= 10000
         && data.intervalDays is number && data.intervalDays >= 0 && data.intervalDays <= 36500
         && data.easeFactor is number && data.easeFactor >= 1.3 && data.easeFactor <= 5.0
@@ -167,18 +202,53 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidFocusSession(data) {
-      return data.keys().hasAll(['ownerId', 'mode', 'contextType', 'durationSeconds', 'ambientSound', 'completedAt', 'dateKey', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'mode', 'contextType', 'roomId', 'roomName', 'subjectId', 'subjectName', 'subjectColor', 'durationSeconds', 'ambientSound', 'completedAt', 'dateKey', 'createdAt'])
+    function isValidBlurtWeakPoint(item) {
+      return item is map
+        && item.keys().hasAll(['topic', 'gap', 'suggestedReview'])
+        && item.keys().hasOnly(['topic', 'gap', 'suggestedReview'])
+        && item.topic is string && item.topic.size() <= 200
+        && item.gap is string && item.gap.size() <= 1000
+        && item.suggestedReview is string && item.suggestedReview.size() <= 1000;
+    }
+
+    function isValidBlurtSession(data) {
+      return data.keys().hasAll(['ownerId', 'sourceLabel', 'blurtText', 'durationSeconds', 'summary', 'strongPoints', 'weakPoints', 'missedKeyFacts', 'dateKey', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'subjectId', 'subjectName', 'chapterId', 'chapterTitle', 'sourceLabel', 'blurtText', 'durationSeconds', 'summary', 'strongPoints', 'weakPoints', 'missedKeyFacts', 'cardsGeneratedCount', 'dateKey', 'createdAt'])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
-        && data.mode in ['timer', 'stopwatch']
-        && data.contextType in ['solo', 'public_room', 'private_room']
+        && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
+        && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 100))
+        && (!('chapterId' in data) || (data.chapterId is string && data.chapterId.size() <= 128))
+        && (!('chapterTitle' in data) || (data.chapterTitle is string && data.chapterTitle.size() <= 160))
+        && data.sourceLabel is string && data.sourceLabel.size() >= 1 && data.sourceLabel.size() <= 200
+        && data.blurtText is string && data.blurtText.size() >= 1 && data.blurtText.size() <= 20000
+        && data.durationSeconds is number && data.durationSeconds >= 1 && data.durationSeconds <= 86400
+        && data.summary is string && data.summary.size() <= 2000
+        && data.strongPoints is list && data.strongPoints.size() <= 20
+        && (data.strongPoints.size() == 0 || (data.strongPoints[0] is string && data.strongPoints[0].size() <= 600))
+        && data.weakPoints is list && data.weakPoints.size() <= 20
+        && (data.weakPoints.size() == 0 || isValidBlurtWeakPoint(data.weakPoints[0]))
+        && data.missedKeyFacts is list && data.missedKeyFacts.size() <= 20
+        && (data.missedKeyFacts.size() == 0 || (data.missedKeyFacts[0] is string && data.missedKeyFacts[0].size() <= 600))
+        && (!('cardsGeneratedCount' in data) || (data.cardsGeneratedCount is number && data.cardsGeneratedCount >= 0 && data.cardsGeneratedCount <= 100))
+        && isValidDateKey(data.dateKey)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFocusSession(data) {
+      return data.keys().hasAll(['ownerId', 'mode', 'contextType', 'durationSeconds', 'ambientSound', 'completedAt', 'dateKey', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'mode', 'contextType', 'roomId', 'roomName', 'subjectId', 'subjectName', 'subjectColor', 'chapterId', 'chapterTitle', 'durationSeconds', 'ambientSound', 'completedAt', 'dateKey', 'createdAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.mode in ['timer', 'stopwatch', 'flashcards', 'blurting']
+        && data.contextType in ['solo', 'public_room', 'private_room', 'active_recall']
         && (!('roomId' in data) || (data.roomId is string && data.roomId.size() <= 128))
         && (!('roomName' in data) || (data.roomName is string && data.roomName.size() <= 120))
         && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
         && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 100))
         && (!('subjectColor' in data) || (data.subjectColor is string && data.subjectColor.size() <= 24))
+        && (!('chapterId' in data) || (data.chapterId is string && data.chapterId.size() <= 128))
+        && (!('chapterTitle' in data) || (data.chapterTitle is string && data.chapterTitle.size() <= 160))
         && data.durationSeconds is number && data.durationSeconds >= 1 && data.durationSeconds <= 86400
         && data.ambientSound in ['none', 'brown', 'pink', 'white', 'rain', 'forest']
         && data.completedAt is string && data.completedAt.size() >= 10 && data.completedAt.size() <= 64
@@ -269,7 +339,7 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'isPublic', 'handle', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'isPublic', 'handle', 'updatedAt']);
       allow delete: if false;
 
       match /friends/{friendId} {
@@ -305,7 +375,8 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'priority', 'status', 'subjectId', 'dueAt', 'reminderAt', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['priority', 'hardness', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'priority', 'hardness', 'status', 'subjectId', 'dueAt', 'reminderAt', 'updatedAt'])
           );
         allow delete: if isOwner(userId) && isValidId(taskId);
       }
@@ -341,7 +412,10 @@ service cloud.firestore {
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'color', 'description', 'updatedAt']);
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['priority', 'hardness', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'color', 'description', 'priority', 'hardness', 'updatedAt'])
+          );
         allow delete: if isOwner(userId) && isValidId(subjectId);
       }
 
@@ -362,9 +436,21 @@ service cloud.firestore {
           && (
             incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'pdfSources', 'updatedAt'])
             || incoming().diff(existing()).affectedKeys().hasOnly(['videoLectures', 'updatedAt'])
-            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'order', 'notes', 'videoLectures', 'pdfSources', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['priority', 'hardness', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'order', 'priority', 'hardness', 'notes', 'videoLectures', 'pdfSources', 'updatedAt'])
           );
         allow delete: if isOwner(userId) && isValidId(chapterId);
+      }
+
+      match /chapterPhotos/{photoId} {
+        allow get: if isOwner(userId) && isValidId(photoId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isOwner(userId) && isValidId(photoId)
+          && isValidChapterPhoto(incoming())
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId)/chapters/$(incoming().chapterId));
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(photoId);
       }
 
       match /flashcards/{flashcardId} {
@@ -382,10 +468,25 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['repetitions', 'intervalDays', 'easeFactor', 'nextReviewAt', 'lastReviewedAt', 'updatedAt'])
-            || incoming().diff(existing()).affectedKeys().hasOnly(['front', 'back', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['repetitions', 'intervalDays', 'easeFactor', 'nextReviewAt', 'lastReviewedAt', 'hardness', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['priority', 'hardness', 'intervalDays', 'nextReviewAt', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['front', 'back', 'priority', 'hardness', 'intervalDays', 'nextReviewAt', 'updatedAt'])
           );
         allow delete: if isOwner(userId) && isValidId(flashcardId);
+      }
+
+      match /blurtSessions/{blurtId} {
+        allow get: if isOwner(userId) && isValidId(blurtId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isOwner(userId) && isValidId(blurtId)
+          && isValidBlurtSession(incoming())
+          && incoming().createdAt == request.time;
+        allow update: if isOwner(userId) && isValidId(blurtId)
+          && isValidBlurtSession(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['cardsGeneratedCount']);
+        allow delete: if isOwner(userId) && isValidId(blurtId);
       }
 
       match /focusSessions/{sessionId} {

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -127,10 +128,17 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const viteModule = await import('vite');
     const vite = await viteModule.createServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: { server: httpServer },
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -147,7 +155,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Pencil server listening on http://0.0.0.0:${PORT}`);
   });
 }
