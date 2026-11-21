@@ -34,7 +34,6 @@ import {
 import { PastelSelect } from './PastelSelect';
 import type {
   AmbientSoundId,
-  FocusMode,
   FocusRoom,
   ParticipantStatus,
   RoomMessage,
@@ -43,6 +42,8 @@ import type {
   Subject,
   UserProfile,
 } from '../types/study';
+
+type RoomTimerMode = 'timer' | 'stopwatch';
 
 interface RoomsViewProps {
   uid: string;
@@ -76,7 +77,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   const [roomTopic, setRoomTopic] = useState('');
   const [roomVisibility, setRoomVisibility] = useState<RoomVisibility>('public');
   const [roomPassword, setRoomPassword] = useState('');
-  const [roomTimerMode, setRoomTimerMode] = useState<FocusMode>('timer');
+  const [roomTimerMode, setRoomTimerMode] = useState<RoomTimerMode>('timer');
   const [roomTimerMins, setRoomTimerMins] = useState(50);
   const [roomDefaultSound, setRoomDefaultSound] = useState<AmbientSoundId>('brown');
   const [creating, setCreating] = useState(false);
@@ -259,7 +260,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   };
 
   const handleHostUpdateRoomConfig = async (
-    nextMode: FocusMode,
+    nextMode: RoomTimerMode,
     nextMins: number,
     nextSound: AmbientSoundId,
   ) => {
@@ -438,7 +439,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
                       value={activeRoom.timerMode}
                       onChange={(val) =>
                         void handleHostUpdateRoomConfig(
-                          val as FocusMode,
+                          val as RoomTimerMode,
                           Math.round(activeRoom.timerDurationSeconds / 60),
                           activeRoom.ambientSound,
                         )
@@ -789,7 +790,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
               <label className="text-xs font-medium text-[var(--pastel-muted)]">Clock Mode</label>
               <PastelSelect
                 value={roomTimerMode}
-                onChange={(val) => setRoomTimerMode(val as FocusMode)}
+                onChange={(val) => setRoomTimerMode(val as RoomTimerMode)}
                 ariaLabel="Clock mode"
                 variant="field"
                 className="w-full"

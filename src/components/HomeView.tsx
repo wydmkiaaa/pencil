@@ -6,20 +6,26 @@ import {
   deleteDailyGoal,
   deleteTask,
   toggleDailyGoal,
+  updateTaskRating,
   updateTaskStatus,
 } from '../lib/studyRepo';
 import { formatDurationShort, getDateKey, getGreetingLabel } from '../lib/spacedRepetition';
 import { PastelSelect } from './PastelSelect';
-import type {
-  DailyGoal,
-  Flashcard,
-  FocusSession,
-  NavTabId,
-  StudyTask,
-  Subject,
-  TaskPriority,
-  TaskStatus,
-  UserProfile,
+import {
+  HARDNESS_LABELS,
+  HARDNESS_ORDER_WEIGHT,
+  PRIORITY_LABELS,
+  PRIORITY_ORDER_WEIGHT,
+  type DailyGoal,
+  type DifficultyLevel,
+  type Flashcard,
+  type FocusSession,
+  type NavTabId,
+  type StudyTask,
+  type Subject,
+  type TaskPriority,
+  type TaskStatus,
+  type UserProfile,
 } from '../types/study';
 
 interface HomeViewProps {
@@ -39,11 +45,7 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
   completed: 'Completed',
 };
 
-const PRIORITY_LABELS: Record<TaskPriority, string> = {
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-};
+type TaskSortBy = 'newest' | 'priority' | 'hardness';
 
 export const HomeView: React.FC<HomeViewProps> = ({
   uid,
@@ -58,12 +60,15 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const todayKey = getDateKey();
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | TaskPriority>('all');
+  const [hardnessFilter, setHardnessFilter] = useState<'all' | DifficultyLevel>('all');
+  const [sortBy, setSortBy] = useState<TaskSortBy>('priority');
 
   // New task state
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskNotes, setTaskNotes] = useState('');
   const [taskPriority, setTaskPriority] = useState<TaskPriority>('medium');
+  const [taskHardness, setTaskHardness] = useState<DifficultyLevel>('medium');
   const [taskSubjectId, setTaskSubjectId] = useState('');
   const [taskDueAt, setTaskDueAt] = useState('');
   const [taskReminderAt, setTaskReminderAt] = useState('');
@@ -84,14 +89,27 @@ export const HomeView: React.FC<HomeViewProps> = ({
     [dailyGoals, todayKey],
   );
 
-  const todayStudySeconds = useMemo(
-    () => sessions.filter((s) => s.dateKey === todayKey).reduce((sum, s) => sum + s.durationSeconds, 0),
-    [sessions, todayKey],
-  );
+  const todayBreakdown = useMemo(() => {
+    let focusRoomSeconds = 0;
+    let activeRecallSeconds = 0;
+    sessions.forEach((s) => {
+      if (s.dateKey !== todayKey) return;
+      if (s.contextType === 'active_recall' || s.mode === 'flashcards' || s.mode === 'blurting') {
+        activeRecallSeconds += s.durationSeconds;
+      } else {
+        focusRoomSeconds += s.durationSeconds;
+      }
+    });
+    return {
+      total: focusRoomSeconds + activeRecallSeconds,
+      focusRoomSeconds,
+      activeRecallSeconds,
+    };
+  }, [sessions, todayKey]);
 
   const todayGoalProgressPct = Math.min(
     100,
-    Math.round((todayStudySeconds / Math.max(1, profile.dailyGoalMinutes * 60)) * 100),
+    Math.round((todayBreakdown.total / Math.max(1, profile.dailyGoalMinutes * 60)) * 100),
   );
 
   const dueFlashcardsCount = useMemo(() => {
@@ -100,12 +118,35 @@ export const HomeView: React.FC<HomeViewProps> = ({
   }, [flashcards]);
 
   const filteredTasks = useMemo(() => {
-    return tasks.filter((t) => {
+    const list = tasks.filter((t) => {
+      const cardHardness: DifficultyLevel = t.hardness || 'medium';
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
+      if (hardnessFilter !== 'all' && cardHardness !== hardnessFilter) return false;
       return true;
     });
-  }, [tasks, statusFilter, priorityFilter]);
+
+    if (sortBy === 'priority') {
+      return [...list].sort((a, b) => {
+        const pDiff = PRIORITY_ORDER_WEIGHT[b.priority] - PRIORITY_ORDER_WEIGHT[a.priority];
+        if (pDiff !== 0) return pDiff;
+        return (
+          HARDNESS_ORDER_WEIGHT[b.hardness || 'medium'] -
+          HARDNESS_ORDER_WEIGHT[a.hardness || 'medium']
+        );
+      });
+    }
+    if (sortBy === 'hardness') {
+      return [...list].sort((a, b) => {
+        const hDiff =
+          HARDNESS_ORDER_WEIGHT[b.hardness || 'medium'] -
+          HARDNESS_ORDER_WEIGHT[a.hardness || 'medium'];
+        if (hDiff !== 0) return hDiff;
+        return PRIORITY_ORDER_WEIGHT[b.priority] - PRIORITY_ORDER_WEIGHT[a.priority];
+      });
+    }
+    return list;
+  }, [tasks, statusFilter, priorityFilter, hardnessFilter, sortBy]);
 
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,6 +157,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
         title: taskTitle,
         notes: taskNotes,
         priority: taskPriority,
+        hardness: taskHardness,
         subjectId: taskSubjectId,
         dueAt: taskDueAt,
         reminderAt: taskReminderAt,
@@ -123,6 +165,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       setTaskTitle('');
       setTaskNotes('');
       setTaskPriority('medium');
+      setTaskHardness('medium');
       setTaskSubjectId('');
       setTaskDueAt('');
       setTaskReminderAt('');
@@ -154,7 +197,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
   return (
     <div className="space-y-8">
-      {/* Greeting sitting cleanly on the canvas (no background box) + metrics strip */}
+      {/* Greeting sitting cleanly on the canvas + metrics strip */}
       <section className="space-y-6">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div className="space-y-1.5">
@@ -167,7 +210,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               {greeting}, {firstName}
             </h1>
             <p className="text-sm font-semibold text-[var(--pastel-muted)] max-w-xl leading-relaxed">
-              Keep today light and deliberate. Track your tasks by priority, check off your daily goals, and settle into a focus block when ready.
+              Keep today light and deliberate. Prioritize tasks by urgency and hardness, check off daily goals, and log focused or active recall study.
             </p>
           </div>
 
@@ -190,24 +233,30 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-stretch">
-          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-3 min-h-[120px]">
-            <div className="text-xs font-bold text-[var(--pastel-muted)]">Today&apos;s Focus</div>
+          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-2.5 min-h-[124px]">
+            <div className="text-xs font-bold text-[var(--pastel-muted)]">Today&apos;s Study</div>
             <div className="text-2xl font-extrabold font-mono-tabular">
-              {formatDurationShort(todayStudySeconds)}
+              {formatDurationShort(todayBreakdown.total)}
               <span className="text-xs font-semibold text-[var(--pastel-muted)]">
                 {' '}
                 / {formatDurationShort(profile.dailyGoalMinutes * 60)}
               </span>
             </div>
-            <div className="h-2 rounded-full bg-[var(--pastel-soft)] overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--pastel-accent)] transition-all"
-                style={{ width: `${todayGoalProgressPct}%` }}
-              />
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-medium text-[var(--pastel-muted)] font-mono-tabular">
+                Focus/Rooms {formatDurationShort(todayBreakdown.focusRoomSeconds)} · Active Recall{' '}
+                {formatDurationShort(todayBreakdown.activeRecallSeconds)}
+              </div>
+              <div className="h-2 rounded-full bg-[var(--pastel-soft)] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[var(--pastel-accent)] transition-all"
+                  style={{ width: `${todayGoalProgressPct}%` }}
+                />
+              </div>
             </div>
           </div>
 
-          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-3 min-h-[120px]">
+          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-3 min-h-[124px]">
             <div className="text-xs font-bold text-[var(--pastel-muted)]">Active Tasks</div>
             <div className="text-2xl font-extrabold font-mono-tabular">
               {tasks.filter((t) => t.status !== 'completed').length}
@@ -218,7 +267,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </div>
           </div>
 
-          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-3 min-h-[120px]">
+          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-5 flex flex-col justify-between gap-3 min-h-[124px]">
             <div className="text-xs font-bold text-[var(--pastel-muted)]">Cards Due Today</div>
             <div className="text-2xl font-extrabold font-mono-tabular">{dueFlashcardsCount}</div>
             <div className="flex items-center justify-between text-xs">
@@ -247,7 +296,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
             <div>
               <h2 className="text-lg font-extrabold tracking-tight">Study Tasks</h2>
               <p className="text-xs text-[var(--pastel-muted)]">
-                Assign priorities, set reminders, and move tasks from not started to completed.
+                Set priority and hardness levels, configure reminders, and track task status.
               </p>
             </div>
             <button
@@ -265,7 +314,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               onSubmit={handleAddTask}
               className="p-5 rounded-2xl bg-[var(--pastel-canvas)] border border-[var(--pastel-border)] space-y-3"
             >
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                 <input
                   type="text"
                   required
@@ -273,18 +322,30 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   onChange={(e) => setTaskTitle(e.target.value)}
                   placeholder="Task title (e.g., Complete Organic Chem Ch. 4)"
                   maxLength={200}
-                  className="sm:col-span-2 px-4 py-2 text-sm rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-surface)] focus:outline-none"
+                  className="sm:col-span-6 px-4 py-2 text-sm rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-surface)] focus:outline-none"
                 />
                 <PastelSelect
                   value={taskPriority}
                   onChange={(val) => setTaskPriority(val as TaskPriority)}
                   ariaLabel="Task priority"
                   variant="field"
-                  className="w-full"
+                  className="sm:col-span-3 w-full"
                   options={[
                     { value: 'high', label: 'High Priority' },
                     { value: 'medium', label: 'Medium Priority' },
                     { value: 'low', label: 'Low Priority' },
+                  ]}
+                />
+                <PastelSelect
+                  value={taskHardness}
+                  onChange={(val) => setTaskHardness(val as DifficultyLevel)}
+                  ariaLabel="Task hardness"
+                  variant="field"
+                  className="sm:col-span-3 w-full"
+                  options={[
+                    { value: 'hard', label: 'Hard' },
+                    { value: 'medium', label: 'Mid Hardness' },
+                    { value: 'easy', label: 'Easy' },
                   ]}
                 />
               </div>
@@ -311,7 +372,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="block text-[11px] text-[var(--pastel-muted)]">Reminder alert</label>
+                  <label className="block text-[11px] text-[var(--pastel-muted)]">App reminder</label>
                   <input
                     type="datetime-local"
                     value={taskReminderAt}
@@ -349,9 +410,9 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </form>
           )}
 
-          {/* Filter controls */}
+          {/* Filter & sort controls */}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-1 p-1 bg-[var(--pastel-soft)] rounded-full">
+            <div className="flex items-center gap-1 p-1 bg-[var(--pastel-soft)] rounded-full overflow-x-auto max-w-full">
               {(['all', 'not_started', 'working', 'completed'] as const).map((status) => (
                 <button
                   key={status}
@@ -368,20 +429,49 @@ export const HomeView: React.FC<HomeViewProps> = ({
               ))}
             </div>
 
-            <PastelSelect
-              value={priorityFilter}
-              onChange={(val) => setPriorityFilter(val as 'all' | TaskPriority)}
-              ariaLabel="Filter by priority"
-              variant="pill"
-              align="right"
-              className="min-w-[140px]"
-              options={[
-                { value: 'all', label: 'All Priorities' },
-                { value: 'high', label: 'High Priority' },
-                { value: 'medium', label: 'Medium Priority' },
-                { value: 'low', label: 'Low Priority' },
-              ]}
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <PastelSelect
+                value={priorityFilter}
+                onChange={(val) => setPriorityFilter(val as 'all' | TaskPriority)}
+                ariaLabel="Filter by priority"
+                variant="pill"
+                align="right"
+                className="min-w-[130px]"
+                options={[
+                  { value: 'all', label: 'All Priorities' },
+                  { value: 'high', label: 'High Priority' },
+                  { value: 'medium', label: 'Medium Priority' },
+                  { value: 'low', label: 'Low Priority' },
+                ]}
+              />
+              <PastelSelect
+                value={hardnessFilter}
+                onChange={(val) => setHardnessFilter(val as 'all' | DifficultyLevel)}
+                ariaLabel="Filter by hardness"
+                variant="pill"
+                align="right"
+                className="min-w-[120px]"
+                options={[
+                  { value: 'all', label: 'All Hardness' },
+                  { value: 'hard', label: 'Hard' },
+                  { value: 'medium', label: 'Mid' },
+                  { value: 'easy', label: 'Easy' },
+                ]}
+              />
+              <PastelSelect
+                value={sortBy}
+                onChange={(val) => setSortBy(val as TaskSortBy)}
+                ariaLabel="Sort tasks"
+                variant="pill"
+                align="right"
+                className="min-w-[130px]"
+                options={[
+                  { value: 'priority', label: 'Priority First' },
+                  { value: 'hardness', label: 'Hardest First' },
+                  { value: 'newest', label: 'Newest First' },
+                ]}
+              />
+            </div>
           </div>
 
           {/* Task rows */}
@@ -390,101 +480,148 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <div className="py-10 text-center space-y-2">
                 <p className="text-sm font-medium">No tasks match this filter</p>
                 <p className="text-xs text-[var(--pastel-muted)]">
-                  Add a study task with a priority level and reminder to organize your day.
+                  Add a study task with priority and hardness ratings to organize your day.
                 </p>
               </div>
             ) : (
               filteredTasks.map((task) => {
                 const subj = task.subjectId ? subjectMap.get(task.subjectId) : undefined;
+                const hardness: DifficultyLevel = task.hardness || 'medium';
                 return (
                   <div
                     key={task.id}
-                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    className="py-3.5 flex flex-col gap-3"
                   >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2.5">
-                        {subj && (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2.5">
+                          {subj && (
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: subj.color }}
+                              title={subj.name}
+                            />
+                          )}
                           <span
-                            className="w-2.5 h-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: subj.color }}
-                            title={subj.name}
-                          />
-                        )}
-                        <span
-                          className={`text-sm font-medium truncate ${
-                            task.status === 'completed' ? 'line-through text-[var(--pastel-muted)]' : ''
-                          }`}
-                        >
-                          {task.title}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--pastel-muted)]">
-                        <span
-                          className={
-                            task.priority === 'high'
-                              ? 'text-red-700 font-medium'
-                              : task.priority === 'medium'
-                                ? 'text-amber-700 font-medium'
-                                : ''
-                          }
-                        >
-                          {PRIORITY_LABELS[task.priority]} priority
-                        </span>
-                        {subj && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{subj.name}</span>
-                          </>
-                        )}
-                        {task.dueAt && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="inline-flex items-center gap-1 font-mono-tabular">
-                              <Clock className="w-3 h-3" />
-                              Due {new Date(task.dueAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </>
-                        )}
-                        {task.reminderAt && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="inline-flex items-center gap-1 font-mono-tabular">
-                              <Bell className="w-3 h-3" />
-                              Remind {new Date(task.reminderAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      {task.notes && (
-                        <p className="text-xs text-[var(--pastel-muted)] line-clamp-1">{task.notes}</p>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <div className="flex items-center gap-1 p-1 bg-[var(--pastel-soft)] rounded-full">
-                        {(['not_started', 'working', 'completed'] as const).map((st) => (
-                          <button
-                            key={st}
-                            type="button"
-                            onClick={() => void updateTaskStatus(uid, task.id, st)}
-                            className={`px-2.5 py-1 text-[11px] font-bold rounded-full transition-colors whitespace-nowrap cursor-pointer ${
-                              task.status === st
-                                ? 'bg-[var(--pastel-surface)] text-[var(--pastel-ink)] shadow-xs'
-                                : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)]'
+                            className={`text-sm font-medium truncate ${
+                              task.status === 'completed' ? 'line-through text-[var(--pastel-muted)]' : ''
                             }`}
                           >
-                            {STATUS_LABELS[st]}
-                          </button>
-                        ))}
+                            {task.title}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--pastel-muted)]">
+                          <span
+                            className={
+                              task.priority === 'high'
+                                ? 'text-red-700 font-semibold'
+                                : task.priority === 'medium'
+                                  ? 'text-amber-700 font-semibold'
+                                  : 'font-medium'
+                            }
+                          >
+                            {PRIORITY_LABELS[task.priority]} priority
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-medium text-[var(--pastel-ink)]">
+                            {HARDNESS_LABELS[hardness]} hardness
+                          </span>
+                          {subj && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{subj.name}</span>
+                            </>
+                          )}
+                          {task.dueAt && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="inline-flex items-center gap-1 font-mono-tabular">
+                                <Clock className="w-3 h-3" />
+                                Due{' '}
+                                {new Date(task.dueAt).toLocaleString([], {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                            </>
+                          )}
+                          {task.reminderAt && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="inline-flex items-center gap-1 font-mono-tabular">
+                                <Bell className="w-3 h-3" />
+                                Remind{' '}
+                                {new Date(task.reminderAt).toLocaleString([], {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                        {task.notes && (
+                          <p className="text-xs text-[var(--pastel-muted)] line-clamp-1">{task.notes}</p>
+                        )}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void deleteTask(uid, task.id)}
-                        aria-label="Delete task"
-                        className="p-1.5 rounded-full text-[var(--pastel-muted)] hover:text-red-600 hover:bg-[var(--pastel-soft)] transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <PastelSelect
+                          value={task.priority}
+                          onChange={(val) =>
+                            void updateTaskRating(uid, task.id, val as TaskPriority, hardness)
+                          }
+                          ariaLabel={`Priority for ${task.title}`}
+                          variant="pill"
+                          className="min-w-[96px]"
+                          options={[
+                            { value: 'high', label: 'High' },
+                            { value: 'medium', label: 'Mid Prio' },
+                            { value: 'low', label: 'Low' },
+                          ]}
+                        />
+                        <PastelSelect
+                          value={hardness}
+                          onChange={(val) =>
+                            void updateTaskRating(uid, task.id, task.priority, val as DifficultyLevel)
+                          }
+                          ariaLabel={`Hardness for ${task.title}`}
+                          variant="pill"
+                          className="min-w-[84px]"
+                          options={[
+                            { value: 'hard', label: 'Hard' },
+                            { value: 'medium', label: 'Mid' },
+                            { value: 'easy', label: 'Easy' },
+                          ]}
+                        />
+                        <div className="flex items-center gap-1 p-1 bg-[var(--pastel-soft)] rounded-full">
+                          {(['not_started', 'working', 'completed'] as const).map((st) => (
+                            <button
+                              key={st}
+                              type="button"
+                              onClick={() => void updateTaskStatus(uid, task.id, st)}
+                              className={`px-2.5 py-1 text-[11px] font-bold rounded-full transition-colors whitespace-nowrap cursor-pointer ${
+                                task.status === st
+                                  ? 'bg-[var(--pastel-surface)] text-[var(--pastel-ink)] shadow-xs'
+                                  : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)]'
+                              }`}
+                            >
+                              {STATUS_LABELS[st]}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void deleteTask(uid, task.id)}
+                          aria-label="Delete task"
+                          className="p-1.5 rounded-full text-[var(--pastel-muted)] hover:text-red-600 hover:bg-[var(--pastel-soft)] transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

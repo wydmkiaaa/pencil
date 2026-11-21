@@ -14,6 +14,7 @@ interface FocusViewProps {
   ambientVolume: number;
   onChangeAmbientSound: (sound: AmbientSoundId) => void;
   onChangeAmbientVolume: (vol: number) => void;
+  chimesEnabled?: boolean;
 }
 
 export const FocusView: React.FC<FocusViewProps> = ({
@@ -24,6 +25,7 @@ export const FocusView: React.FC<FocusViewProps> = ({
   ambientVolume,
   onChangeAmbientSound,
   onChangeAmbientVolume,
+  chimesEnabled = true,
 }) => {
   const [mode, setMode] = useState<FocusMode>('timer');
   const [customMinutes, setCustomMinutes] = useState(25);
@@ -79,7 +81,9 @@ export const FocusView: React.FC<FocusViewProps> = ({
           if (prev <= 1) {
             window.clearInterval(interval);
             setIsRunning(false);
-            ambientAudio.playCompletionChime();
+            if (chimesEnabled) {
+              ambientAudio.playCompletionChime();
+            }
             void persistSession(initialTimerDurationRef.current, 'timer');
             return customMinutes * 60;
           }

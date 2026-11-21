@@ -25,6 +25,8 @@ import { ambientAudio } from './lib/ambientAudio';
 import { auth } from './lib/firebase';
 import {
   ensureUserProfile,
+  subscribeBlurtSessions,
+  subscribeChapterPhotos,
   subscribeChapters,
   subscribeDailyGoals,
   subscribeFlashcards,
@@ -35,18 +37,22 @@ import {
   subscribeTasks,
   subscribeUserProfile,
 } from './lib/studyRepo';
-import type {
-  AmbientSoundId,
-  Chapter,
-  DailyGoal,
-  Flashcard,
-  FocusSession,
-  FriendLink,
-  NavTabId,
-  PublicProfile,
-  StudyTask,
-  Subject,
-  UserProfile,
+import {
+  DEFAULT_NOTIFICATION_SETTINGS,
+  DEFAULT_REVIEW_INTERVALS,
+  type AmbientSoundId,
+  type BlurtSession,
+  type Chapter,
+  type ChapterPhoto,
+  type DailyGoal,
+  type Flashcard,
+  type FocusSession,
+  type FriendLink,
+  type NavTabId,
+  type PublicProfile,
+  type StudyTask,
+  type Subject,
+  type UserProfile,
 } from './types/study';
 
 interface NotificationItem {
@@ -79,13 +85,19 @@ function AppWorkspace() {
   const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [chapterPhotos, setChapterPhotos] = useState<ChapterPhoto[]>([]);
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
+  const [blurtSessions, setBlurtSessions] = useState<BlurtSession[]>([]);
   const [sessions, setSessions] = useState<FocusSession[]>([]);
   const [friends, setFriends] = useState<FriendLink[]>([]);
   const [publicProfiles, setPublicProfiles] = useState<PublicProfile[]>([]);
 
   const [activeTab, setActiveTab] = useState<NavTabId>('home');
   const [notifOpen, setNotifOpen] = useState(false);
+  const [activeInAppBanner, setActiveInAppBanner] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const [ambientSound, setAmbientSound] = useState<AmbientSoundId>('none');
   const [ambientVolume, setAmbientVolume] = useState(0.35);
 
@@ -106,10 +118,13 @@ function AppWorkspace() {
       setDailyGoals([]);
       setSubjects([]);
       setChapters([]);
+      setChapterPhotos([]);
       setFlashcards([]);
+      setBlurtSessions([]);
       setSessions([]);
       setFriends([]);
       setPublicProfiles([]);
+      setActiveInAppBanner(null);
       ambientAudio.stop();
       return;
     }
@@ -139,8 +154,14 @@ function AppWorkspace() {
       subscribeChapters(user.uid, (items) => {
         if (!cancelled) setChapters(items);
       }),
+      subscribeChapterPhotos(user.uid, (items) => {
+        if (!cancelled) setChapterPhotos(items);
+      }),
       subscribeFlashcards(user.uid, (items) => {
         if (!cancelled) setFlashcards(items);
+      }),
+      subscribeBlurtSessions(user.uid, (items) => {
+        if (!cancelled) setBlurtSessions(items);
       }),
       subscribeFocusSessions(user.uid, (items) => {
         if (!cancelled) setSessions(items);
@@ -174,87 +195,94 @@ function AppWorkspace() {
     ambientAudio.setVolume(vol);
   };
 
-  // Notifications: upcoming deadlines, triggered reminders, and due flashcards
+  const notifSettings = profile?.notificationSettings || DEFAULT_NOTIFICATION_SETTINGS;
+
+  // In-app Notifications: upcoming deadlines, triggered reminders, and due flashcards
   const notifications = useMemo<NotificationItem[]>(() => {
     const items: NotificationItem[] = [];
     const now = Date.now();
     const oneDayMs = 24 * 60 * 60 * 1000;
 
-    tasks.forEach((task) => {
-      if (task.status === 'completed') return;
+    if (notifSettings.taskReminders) {
+      tasks.forEach((task) => {
+        if (task.status === 'completed') return;
 
-      if (task.reminderAt) {
-        const remindTime = new Date(task.reminderAt).getTime();
-        if (!Number.isNaN(remindTime) && remindTime <= now + 60 * 60 * 1000) {
-          items.push({
-            id: `rem_${task.id}`,
-            title: `Reminder: ${task.title}`,
-            detail:
-              remindTime <= now
-                ? 'Reminder time has arrived'
-                : `Scheduled for ${new Date(task.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-            urgency: remindTime <= now ? 'overdue' : 'soon',
-            targetTab: 'home',
-          });
+        if (task.reminderAt) {
+          const remindTime = new Date(task.reminderAt).getTime();
+          if (!Number.isNaN(remindTime) && remindTime <= now + 60 * 60 * 1000) {
+            items.push({
+              id: `rem_${task.id}`,
+              title: `Reminder: ${task.title}`,
+              detail:
+                remindTime <= now
+                  ? 'Reminder time has arrived'
+                  : `Scheduled for ${new Date(task.reminderAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+              urgency: remindTime <= now ? 'overdue' : 'soon',
+              targetTab: 'home',
+            });
+          }
         }
-      }
 
-      if (task.dueAt) {
-        const dueTime = new Date(task.dueAt).getTime();
-        if (!Number.isNaN(dueTime) && dueTime <= now + oneDayMs) {
-          items.push({
-            id: `due_${task.id}`,
-            title: `Deadline: ${task.title}`,
-            detail:
-              dueTime < now
-                ? 'Overdue deadline'
-                : `Due ${new Date(task.dueAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
-            urgency: dueTime < now ? 'overdue' : 'soon',
-            targetTab: 'home',
-          });
+        if (task.dueAt) {
+          const dueTime = new Date(task.dueAt).getTime();
+          if (!Number.isNaN(dueTime) && dueTime <= now + oneDayMs) {
+            items.push({
+              id: `due_${task.id}`,
+              title: `Deadline: ${task.title}`,
+              detail:
+                dueTime < now
+                  ? 'Overdue deadline'
+                  : `Due ${new Date(task.dueAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+              urgency: dueTime < now ? 'overdue' : 'soon',
+              targetTab: 'home',
+            });
+          }
         }
-      }
-    });
-
-    const nowIso = new Date().toISOString();
-    const dueCards = flashcards.filter((c) => c.nextReviewAt <= nowIso).length;
-    if (dueCards > 0) {
-      items.push({
-        id: 'due_cards',
-        title: `${dueCards} flashcards due for review`,
-        detail: 'Keep your spaced repetition streak on schedule.',
-        urgency: 'info',
-        targetTab: 'review',
       });
     }
 
-    return items;
-  }, [tasks, flashcards]);
+    if (notifSettings.dueFlashcards) {
+      const nowIso = new Date().toISOString();
+      const dueCards = flashcards.filter((c) => c.nextReviewAt <= nowIso).length;
+      if (dueCards > 0) {
+        items.push({
+          id: 'due_cards',
+          title: `${dueCards} flashcards due for review`,
+          detail: 'Keep your spaced repetition streak on schedule.',
+          urgency: 'info',
+          targetTab: 'review',
+        });
+      }
+    }
 
-  // Browser desktop notification check every 30s for due task reminders
+    return items;
+  }, [tasks, flashcards, notifSettings.taskReminders, notifSettings.dueFlashcards]);
+
+  // In-app reminder banner & optional soft chime check every 30s (no desktop alerts)
   useEffect(() => {
-    if (!user) return;
+    if (!user || !notifSettings.taskReminders) return;
     const checkReminders = () => {
-      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
       const now = Date.now();
-      tasks.forEach((task) => {
-        if (task.status === 'completed' || !task.reminderAt) return;
+      for (const task of tasks) {
+        if (task.status === 'completed' || !task.reminderAt) continue;
         const t = new Date(task.reminderAt).getTime();
         if (!Number.isNaN(t) && t <= now && now - t < 15 * 60 * 1000) {
           const key = `${task.id}_${task.reminderAt}`;
           if (!alertedRemindersRef.current.has(key)) {
             alertedRemindersRef.current.add(key);
-            new Notification('Pencil Reminder', {
-              body: task.title,
-            });
+            setActiveInAppBanner({ id: key, title: task.title });
+            if (notifSettings.sessionChimes) {
+              ambientAudio.playCompletionChime();
+            }
+            break;
           }
         }
-      });
+      }
     };
     checkReminders();
     const id = window.setInterval(checkReminders, 30000);
     return () => window.clearInterval(id);
-  }, [tasks, user]);
+  }, [tasks, user, notifSettings.taskReminders, notifSettings.sessionChimes]);
 
   if (!authReady) {
     return (
@@ -276,6 +304,8 @@ function AppWorkspace() {
     bio: '',
     pastelTheme: 'stone',
     dailyGoalMinutes: 120,
+    reviewIntervals: { ...DEFAULT_REVIEW_INTERVALS },
+    notificationSettings: { ...DEFAULT_NOTIFICATION_SETTINGS },
     isPublic: false,
   };
 
@@ -283,7 +313,7 @@ function AppWorkspace() {
 
   return (
     <div className="min-h-screen bg-[var(--pastel-canvas)] text-[var(--pastel-ink)] pb-32">
-      {/* Transparent Top Header (no white bar) */}
+      {/* Transparent Top Header */}
       <header className="pt-5 pb-3">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 md:px-8 h-12 flex items-center justify-between gap-6">
           {/* Zone 1: Brand Wordmark */}
@@ -311,7 +341,7 @@ function AppWorkspace() {
             )}
           </div>
 
-          {/* Zone 3: Notifications & Profile Action */}
+          {/* Zone 3: In-App Notifications & Profile Action */}
           <div className="flex items-center gap-2.5 shrink-0 relative">
             <button
               type="button"
@@ -396,6 +426,38 @@ function AppWorkspace() {
         </div>
       </header>
 
+      {/* Subtle In-App Reminder Banner */}
+      {activeInAppBanner && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 md:px-8 pt-1">
+          <div className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <Bell className="w-3.5 h-3.5 text-[var(--pastel-muted)] shrink-0" />
+              <span className="font-bold truncate">Reminder: {activeInAppBanner.title}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('home');
+                  setActiveInAppBanner(null);
+                }}
+                className="font-bold underline underline-offset-4 cursor-pointer"
+              >
+                View Task
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveInAppBanner(null)}
+                aria-label="Dismiss reminder"
+                className="p-1 rounded-full hover:bg-[var(--pastel-soft)] cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Container */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 md:px-8 pt-3 pb-8">
         {activeTab === 'home' && (
@@ -420,6 +482,7 @@ function AppWorkspace() {
             ambientVolume={ambientVolume}
             onChangeAmbientSound={handleChangeAmbientSound}
             onChangeAmbientVolume={handleChangeAmbientVolume}
+            chimesEnabled={notifSettings.sessionChimes}
           />
         )}
 
@@ -441,11 +504,20 @@ function AppWorkspace() {
             subjects={subjects}
             chapters={chapters}
             flashcards={flashcards}
+            chapterPhotos={chapterPhotos}
           />
         )}
 
         {activeTab === 'review' && (
-          <ReviewView uid={user.uid} flashcards={flashcards} subjects={subjects} />
+          <ReviewView
+            uid={user.uid}
+            profile={effectiveProfile}
+            flashcards={flashcards}
+            subjects={subjects}
+            chapters={chapters}
+            blurtSessions={blurtSessions}
+            ambientSound={ambientSound}
+          />
         )}
 
         {activeTab === 'progress' && (
@@ -462,7 +534,7 @@ function AppWorkspace() {
         )}
       </main>
 
-      {/* Floating Bottom Dashboard Dock with Circular Icon Badges (Settings on rightmost) */}
+      {/* Floating Bottom Dashboard Dock */}
       <nav
         aria-label="Pencil workspace navigation"
         className="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 w-[calc(100%-1.5rem)] max-w-2xl lg:w-auto lg:max-w-[calc(100vw-2rem)] rounded-3xl lg:rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-surface)]/95 backdrop-blur-xl shadow-lg shadow-black/5 p-2 lg:px-3 lg:py-2"

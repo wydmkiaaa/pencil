@@ -5,6 +5,7 @@ import {
   Check,
   Copy,
   Globe,
+  Layers,
   Lock,
   LogOut,
   Palette,
@@ -19,8 +20,11 @@ import { auth } from '../lib/firebase';
 import { addFriend, normalizeHandle, removeFriend, updateUserProfile } from '../lib/studyRepo';
 import {
   BLUEPRINT_LIMITS,
+  DEFAULT_NOTIFICATION_SETTINGS,
+  DEFAULT_REVIEW_INTERVALS,
   PASTEL_THEMES,
   type FriendLink,
+  type NotificationSettings,
   type PastelThemeId,
   type PublicProfile,
   type UserProfile,
@@ -80,9 +84,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [busyFriendUid, setBusyFriendUid] = useState<string | null>(null);
   const [friendNotice, setFriendNotice] = useState<string | null>(null);
 
-  const [notifPermission, setNotifPermission] = useState<string>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
-  );
+  const baseIntervals = profile.reviewIntervals || DEFAULT_REVIEW_INTERVALS;
+  const [hardDays, setHardDays] = useState(String(baseIntervals.hardDays));
+  const [midDays, setMidDays] = useState(String(baseIntervals.midDays));
+  const [easyDays, setEasyDays] = useState(String(baseIntervals.easyDays));
+  const [savingIntervals, setSavingIntervals] = useState(false);
+  const [intervalsSavedMsg, setIntervalsSavedMsg] = useState<string | null>(null);
+
+  const notifSettings: NotificationSettings =
+    profile.notificationSettings || DEFAULT_NOTIFICATION_SETTINGS;
 
   const friendUidSet = useMemo(() => new Set(friends.map((f) => f.friendUid)), [friends]);
 
@@ -201,10 +211,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleRequestNotifications = async () => {
-    if (typeof Notification === 'undefined') return;
-    const result = await Notification.requestPermission();
-    setNotifPermission(result);
+  const handleSaveIntervals = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingIntervals(true);
+    setIntervalsSavedMsg(null);
+    try {
+      await updateUserProfile(uid, {
+        reviewIntervals: {
+          hardDays: Math.max(1, Math.min(365, Math.round(Number(hardDays) || 1))),
+          midDays: Math.max(1, Math.min(365, Math.round(Number(midDays) || 3))),
+          easyDays: Math.max(1, Math.min(365, Math.round(Number(easyDays) || 7))),
+        },
+      });
+      setIntervalsSavedMsg('Review intervals saved.');
+    } finally {
+      setSavingIntervals(false);
+    }
+  };
+
+  const handleToggleNotificationSetting = async (key: keyof NotificationSettings) => {
+    const next: NotificationSettings = {
+      ...notifSettings,
+      [key]: !notifSettings[key],
+    };
+    await updateUserProfile(uid, { notificationSettings: next });
   };
 
   return (
@@ -561,30 +591,124 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </section>
 
-      {/* Reminder Alerts */}
-      <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Bell className="w-4 h-4 text-[var(--pastel-muted)]" />
+      {/* Spaced Repetition Review Intervals */}
+      <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <Layers className="w-4 h-4 text-[var(--pastel-muted)]" />
           <div>
-            <h2 className="text-sm font-extrabold">Desktop Reminder Alerts</h2>
+            <h2 className="text-base font-extrabold tracking-tight">Flashcard Review Intervals</h2>
             <p className="text-xs text-[var(--pastel-muted)]">
-              Receive gentle browser alerts when task reminders or deadlines arrive.
+              Set how many days to wait before practicing a card again when marked Hard, Mid, or Easy.
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void handleRequestNotifications()}
-          disabled={notifPermission === 'granted' || notifPermission === 'unsupported'}
-          className="px-4 py-2 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] text-xs font-bold cursor-pointer disabled:opacity-50"
-        >
-          {notifPermission === 'granted'
-            ? 'Alerts Enabled'
-            : notifPermission === 'denied'
-              ? 'Blocked in Browser'
-              : 'Enable Alerts'}
-        </button>
+        <form onSubmit={handleSaveIntervals} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <label className="space-y-1.5">
+            <span className="block text-xs font-bold text-[var(--pastel-muted)]">Hard (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={hardDays}
+              onChange={(e) => setHardDays(e.target.value)}
+              className="w-full px-4 py-2 text-sm font-mono-tabular rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="block text-xs font-bold text-[var(--pastel-muted)]">Mid (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={midDays}
+              onChange={(e) => setMidDays(e.target.value)}
+              className="w-full px-4 py-2 text-sm font-mono-tabular rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="block text-xs font-bold text-[var(--pastel-muted)]">Easy (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={easyDays}
+              onChange={(e) => setEasyDays(e.target.value)}
+              className="w-full px-4 py-2 text-sm font-mono-tabular rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={savingIntervals}
+            className="px-5 py-2.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold hover:opacity-90 cursor-pointer disabled:opacity-50"
+          >
+            {savingIntervals ? 'Saving...' : 'Save Intervals'}
+          </button>
+        </form>
+        {intervalsSavedMsg && (
+          <p className="text-xs text-[var(--pastel-muted)]">{intervalsSavedMsg}</p>
+        )}
+      </section>
+
+      {/* In-App Notifications */}
+      <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-4">
+        <div className="flex items-center gap-2.5">
+          <Bell className="w-4 h-4 text-[var(--pastel-muted)]" />
+          <div>
+            <h2 className="text-base font-extrabold tracking-tight">App Notifications</h2>
+            <p className="text-xs text-[var(--pastel-muted)]">
+              Manage in-app reminders, flashcard alerts, and completion chimes inside Pencil.
+            </p>
+          </div>
+        </div>
+
+        <div className="divide-y divide-[var(--pastel-border)]">
+          {(
+            [
+              {
+                key: 'taskReminders' as const,
+                title: 'Task & Deadline Reminders',
+                desc: 'Show task reminders and approaching deadlines in the notification bell and in-app banner.',
+              },
+              {
+                key: 'dueFlashcards' as const,
+                title: 'Due Flashcard Alerts',
+                desc: 'Notify you inside the app when spaced-repetition cards are ready for review.',
+              },
+              {
+                key: 'sessionChimes' as const,
+                title: 'Completion & Reminder Chimes',
+                desc: 'Play a gentle soft chime when focus blocks finish or an in-app reminder arrives.',
+              },
+            ]
+          ).map((item) => {
+            const enabled = notifSettings[item.key];
+            return (
+              <div
+                key={item.key}
+                className="py-3.5 flex items-center justify-between gap-4"
+              >
+                <div className="space-y-0.5">
+                  <div className="text-sm font-bold">{item.title}</div>
+                  <p className="text-xs text-[var(--pastel-muted)]">{item.desc}</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={enabled}
+                  onClick={() => void handleToggleNotificationSetting(item.key)}
+                  className={`px-4 py-1.5 rounded-full border text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                    enabled
+                      ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border-[var(--pastel-accent)]'
+                      : 'bg-[var(--pastel-canvas)] text-[var(--pastel-muted)] border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)]'
+                  }`}
+                >
+                  {enabled ? 'On' : 'Off'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </section>
     </div>
   );

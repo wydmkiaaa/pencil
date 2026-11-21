@@ -17,19 +17,28 @@ import { db, handleFirestoreError, OperationType } from './firebase';
 import { sha256Hex } from './spacedRepetition';
 import {
   BLUEPRINT_LIMITS,
+  DEFAULT_NOTIFICATION_SETTINGS,
+  DEFAULT_REVIEW_INTERVALS,
   type AmbientSoundId,
+  type BlurtSession,
+  type BlurtWeakPoint,
   type Chapter,
+  type ChapterPhoto,
   type DailyGoal,
+  type DifficultyLevel,
   type FocusContextType,
   type FocusMode,
   type FocusRoom,
   type FocusSession,
   type Flashcard,
   type FriendLink,
+  type NotificationSettings,
   type ParticipantStatus,
   type PastelThemeId,
   type PdfSourceMeta,
+  type PriorityLevel,
   type PublicProfile,
+  type ReviewIntervalConfig,
   type RoomMessage,
   type RoomParticipant,
   type RoomTimerStatus,
@@ -60,6 +69,22 @@ export function normalizeHandle(raw: string, uidFallback: string): string {
   return `scholar_${suffix}`.slice(0, BLUEPRINT_LIMITS.HANDLE_MAX);
 }
 
+function sanitizeIntervals(input?: Partial<ReviewIntervalConfig>): ReviewIntervalConfig {
+  return {
+    hardDays: Math.max(1, Math.min(365, Math.round(Number(input?.hardDays) || DEFAULT_REVIEW_INTERVALS.hardDays))),
+    midDays: Math.max(1, Math.min(365, Math.round(Number(input?.midDays) || DEFAULT_REVIEW_INTERVALS.midDays))),
+    easyDays: Math.max(1, Math.min(365, Math.round(Number(input?.easyDays) || DEFAULT_REVIEW_INTERVALS.easyDays))),
+  };
+}
+
+function sanitizeNotificationSettings(input?: Partial<NotificationSettings>): NotificationSettings {
+  return {
+    taskReminders: input?.taskReminders ?? DEFAULT_NOTIFICATION_SETTINGS.taskReminders,
+    dueFlashcards: input?.dueFlashcards ?? DEFAULT_NOTIFICATION_SETTINGS.dueFlashcards,
+    sessionChimes: input?.sessionChimes ?? DEFAULT_NOTIFICATION_SETTINGS.sessionChimes,
+  };
+}
+
 export async function ensureUserProfile(
   uid: string,
   defaults: { displayName: string; email?: string | null; avatarUrl?: string | null },
@@ -72,10 +97,7 @@ export async function ensureUserProfile(
       return snap.data() as UserProfile;
     }
     const cleanName = (defaults.displayName || 'Scholar').trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Scholar';
-    const handle = normalizeHandle(
-      `${cleanName}_${uid.slice(0, 4)}`,
-      uid,
-    );
+    const handle = normalizeHandle(`${cleanName}_${uid.slice(0, 4)}`, uid);
     const profile: UserProfile = {
       uid,
       displayName: cleanName,
@@ -84,6 +106,8 @@ export async function ensureUserProfile(
       bio: '',
       pastelTheme: 'stone',
       dailyGoalMinutes: 120,
+      reviewIntervals: { ...DEFAULT_REVIEW_INTERVALS },
+      notificationSettings: { ...DEFAULT_NOTIFICATION_SETTINGS },
       isPublic: false,
       handle,
       createdAt: serverTimestamp(),
@@ -112,7 +136,16 @@ export async function updateUserProfile(
   updates: Partial<
     Pick<
       UserProfile,
-      'displayName' | 'email' | 'avatarUrl' | 'bio' | 'pastelTheme' | 'dailyGoalMinutes' | 'isPublic' | 'handle'
+      | 'displayName'
+      | 'email'
+      | 'avatarUrl'
+      | 'bio'
+      | 'pastelTheme'
+      | 'dailyGoalMinutes'
+      | 'reviewIntervals'
+      | 'notificationSettings'
+      | 'isPublic'
+      | 'handle'
     >
   >,
 ): Promise<void> {
@@ -138,6 +171,12 @@ export async function updateUserProfile(
   if (updates.dailyGoalMinutes !== undefined) {
     payload.dailyGoalMinutes = Math.max(15, Math.min(720, Math.round(updates.dailyGoalMinutes)));
   }
+  if (updates.reviewIntervals !== undefined) {
+    payload.reviewIntervals = sanitizeIntervals(updates.reviewIntervals);
+  }
+  if (updates.notificationSettings !== undefined) {
+    payload.notificationSettings = sanitizeNotificationSettings(updates.notificationSettings);
+  }
   if (updates.isPublic !== undefined) {
     payload.isPublic = Boolean(updates.isPublic);
   }
@@ -153,8 +192,7 @@ export async function updateUserProfile(
       const updatedSnap = await getDoc(userRef);
       latest = (updatedSnap.exists() ? updatedSnap.data() : existingSnap.data()) as UserProfile;
     } else {
-      const cleanName =
-        (typeof payload.displayName === 'string' && payload.displayName) || 'Scholar';
+      const cleanName = (typeof payload.displayName === 'string' && payload.displayName) || 'Scholar';
       const fallbackProfile: UserProfile = {
         uid,
         displayName: cleanName,
@@ -163,6 +201,9 @@ export async function updateUserProfile(
         bio: typeof payload.bio === 'string' ? payload.bio : '',
         pastelTheme: (payload.pastelTheme as PastelThemeId) || 'stone',
         dailyGoalMinutes: typeof payload.dailyGoalMinutes === 'number' ? payload.dailyGoalMinutes : 120,
+        reviewIntervals: (payload.reviewIntervals as ReviewIntervalConfig) || { ...DEFAULT_REVIEW_INTERVALS },
+        notificationSettings:
+          (payload.notificationSettings as NotificationSettings) || { ...DEFAULT_NOTIFICATION_SETTINGS },
         isPublic: typeof payload.isPublic === 'boolean' ? payload.isPublic : false,
         handle:
           typeof payload.handle === 'string'
@@ -178,7 +219,6 @@ export async function updateUserProfile(
     handleFirestoreError(error, OperationType.UPDATE, userPath);
   }
 
-  // Sync public profile whenever public-facing attributes change
   const touchesPublic =
     updates.isPublic !== undefined ||
     updates.handle !== undefined ||
@@ -307,6 +347,7 @@ export async function createTask(
     title: string;
     notes?: string;
     priority: TaskPriority;
+    hardness?: DifficultyLevel;
     subjectId?: string;
     dueAt?: string;
     reminderAt?: string;
@@ -320,6 +361,7 @@ export async function createTask(
       title: input.title.trim().slice(0, BLUEPRINT_LIMITS.TASK_TITLE_MAX),
       notes: (input.notes || '').trim().slice(0, BLUEPRINT_LIMITS.TASK_NOTES_MAX),
       priority: input.priority,
+      hardness: input.hardness || 'medium',
       status: 'not_started' as TaskStatus,
       subjectId: (input.subjectId || '').slice(0, 128),
       dueAt: (input.dueAt || '').slice(0, 64),
@@ -337,6 +379,24 @@ export async function updateTaskStatus(uid: string, taskId: string, status: Task
   try {
     await updateDoc(doc(db, 'users', uid, 'tasks', taskId), {
       status,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateTaskRating(
+  uid: string,
+  taskId: string,
+  priority: TaskPriority,
+  hardness: DifficultyLevel,
+): Promise<void> {
+  const path = `users/${uid}/tasks/${taskId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'tasks', taskId), {
+      priority,
+      hardness,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -419,7 +479,13 @@ export function subscribeSubjects(uid: string, onData: (items: Subject[]) => voi
 
 export async function createSubject(
   uid: string,
-  input: { name: string; color: string; description?: string },
+  input: {
+    name: string;
+    color: string;
+    description?: string;
+    priority?: PriorityLevel;
+    hardness?: DifficultyLevel;
+  },
 ): Promise<string> {
   const id = genId('subj');
   const path = `users/${uid}/subjects/${id}`;
@@ -429,6 +495,8 @@ export async function createSubject(
       name: input.name.trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_NAME_MAX),
       color: input.color.slice(0, 24),
       description: (input.description || '').trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_DESC_MAX),
+      priority: input.priority || 'medium',
+      hardness: input.hardness || 'medium',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -438,17 +506,17 @@ export async function createSubject(
   }
 }
 
-export async function updateSubject(
+export async function updateSubjectRating(
   uid: string,
   subjectId: string,
-  updates: { name: string; color: string; description?: string },
+  priority: PriorityLevel,
+  hardness: DifficultyLevel,
 ): Promise<void> {
   const path = `users/${uid}/subjects/${subjectId}`;
   try {
     await updateDoc(doc(db, 'users', uid, 'subjects', subjectId), {
-      name: updates.name.trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_NAME_MAX),
-      color: updates.color.slice(0, 24),
-      description: (updates.description || '').trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_DESC_MAX),
+      priority,
+      hardness,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -480,7 +548,13 @@ export function subscribeChapters(uid: string, onData: (items: Chapter[]) => voi
 
 export async function createChapter(
   uid: string,
-  input: { subjectId: string; title: string; order: number },
+  input: {
+    subjectId: string;
+    title: string;
+    order: number;
+    priority?: PriorityLevel;
+    hardness?: DifficultyLevel;
+  },
 ): Promise<string> {
   const id = genId('chap');
   const path = `users/${uid}/chapters/${id}`;
@@ -490,6 +564,8 @@ export async function createChapter(
       subjectId: input.subjectId,
       title: input.title.trim().slice(0, BLUEPRINT_LIMITS.CHAPTER_TITLE_MAX),
       order: Math.max(0, Math.min(10000, input.order)),
+      priority: input.priority || 'medium',
+      hardness: input.hardness || 'medium',
       notes: '',
       videoLectures: [],
       pdfSources: [],
@@ -502,6 +578,24 @@ export async function createChapter(
   }
 }
 
+export async function updateChapterRating(
+  uid: string,
+  chapterId: string,
+  priority: PriorityLevel,
+  hardness: DifficultyLevel,
+): Promise<void> {
+  const path = `users/${uid}/chapters/${chapterId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'chapters', chapterId), {
+      priority,
+      hardness,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function updateChapterNotesAndPdfs(
   uid: string,
   chapterId: string,
@@ -510,7 +604,7 @@ export async function updateChapterNotesAndPdfs(
 ): Promise<void> {
   const path = `users/${uid}/chapters/${chapterId}`;
   try {
-    const cleanPdfs = pdfSources.slice(0, 10).map((p) => ({
+    const cleanPdfs = pdfSources.slice(0, 15).map((p) => ({
       fileName: p.fileName.slice(0, 200),
       pageCount: Number(p.pageCount) || 1,
       extractedAt: p.extractedAt.slice(0, 64),
@@ -532,10 +626,19 @@ export async function updateChapterVideos(
 ): Promise<void> {
   const path = `users/${uid}/chapters/${chapterId}`;
   try {
-    const cleanVideos = videoLectures.slice(0, 20).map((v) => ({
-      title: v.title.trim().slice(0, BLUEPRINT_LIMITS.VIDEO_TITLE_MAX),
-      url: v.url.trim().slice(0, BLUEPRINT_LIMITS.VIDEO_URL_MAX),
-    }));
+    const cleanVideos = videoLectures.slice(0, 30).map((v, idx) => {
+      const total = Math.max(0, Math.min(864000, Math.round(Number(v.totalSeconds) || 0)));
+      const rawWatched = Math.max(0, Math.min(864000, Math.round(Number(v.watchedSeconds) || 0)));
+      const watched = total > 0 ? Math.min(total, rawWatched) : rawWatched;
+      return {
+        id: (v.id || `vid_${idx}_${Date.now().toString(36)}`).slice(0, 64),
+        title: v.title.trim().slice(0, BLUEPRINT_LIMITS.VIDEO_TITLE_MAX),
+        url: v.url.trim().slice(0, BLUEPRINT_LIMITS.VIDEO_URL_MAX),
+        totalSeconds: total,
+        watchedSeconds: watched,
+        lastWatchedAt: (v.lastWatchedAt || '').slice(0, 64),
+      };
+    });
     await updateDoc(doc(db, 'users', uid, 'chapters', chapterId), {
       videoLectures: cleanVideos,
       updatedAt: serverTimestamp(),
@@ -549,6 +652,57 @@ export async function deleteChapter(uid: string, chapterId: string): Promise<voi
   const path = `users/${uid}/chapters/${chapterId}`;
   try {
     await deleteDoc(doc(db, 'users', uid, 'chapters', chapterId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// --- Chapter Photos ---
+export function subscribeChapterPhotos(uid: string, onData: (items: ChapterPhoto[]) => void): Unsubscribe {
+  const path = `users/${uid}/chapterPhotos`;
+  const q = query(
+    collection(db, 'users', uid, 'chapterPhotos'),
+    where('ownerId', '==', uid),
+    orderBy('createdAt', 'desc'),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      onData(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ChapterPhoto, 'id'>) })));
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path),
+  );
+}
+
+export async function addChapterPhoto(
+  uid: string,
+  input: {
+    subjectId: string;
+    chapterId: string;
+    title: string;
+    dataUrl: string;
+  },
+): Promise<void> {
+  const id = genId('photo');
+  const path = `users/${uid}/chapterPhotos/${id}`;
+  try {
+    await setDoc(doc(db, 'users', uid, 'chapterPhotos', id), {
+      ownerId: uid,
+      subjectId: input.subjectId,
+      chapterId: input.chapterId,
+      title: (input.title.trim() || 'Study Note Photo').slice(0, 160),
+      dataUrl: input.dataUrl.slice(0, BLUEPRINT_LIMITS.PHOTO_DATA_URL_MAX),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteChapterPhoto(uid: string, photoId: string): Promise<void> {
+  const path = `users/${uid}/chapterPhotos/${photoId}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'chapterPhotos', photoId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -571,7 +725,12 @@ export async function createFlashcardsBatch(
   uid: string,
   subjectId: string,
   chapterId: string,
-  cards: Array<{ front: string; back: string }>,
+  cards: Array<{
+    front: string;
+    back: string;
+    priority?: PriorityLevel;
+    hardness?: DifficultyLevel;
+  }>,
 ): Promise<void> {
   const path = `users/${uid}/flashcards`;
   try {
@@ -585,6 +744,8 @@ export async function createFlashcardsBatch(
         chapterId: chapterId.slice(0, 128),
         front: card.front.trim().slice(0, BLUEPRINT_LIMITS.FLASHCARD_FRONT_MAX),
         back: card.back.trim().slice(0, BLUEPRINT_LIMITS.FLASHCARD_BACK_MAX),
+        priority: card.priority || 'medium',
+        hardness: card.hardness || 'medium',
         repetitions: 0,
         intervalDays: 0,
         easeFactor: 2.5,
@@ -607,6 +768,7 @@ export async function updateFlashcardSchedule(
     repetitions: number;
     intervalDays: number;
     easeFactor: number;
+    hardness: DifficultyLevel;
     nextReviewAt: string;
     lastReviewedAt: string;
   },
@@ -622,6 +784,48 @@ export async function updateFlashcardSchedule(
   }
 }
 
+export async function updateFlashcardDetails(
+  uid: string,
+  cardId: string,
+  updates: {
+    front?: string;
+    back?: string;
+    priority?: PriorityLevel;
+    hardness?: DifficultyLevel;
+    intervalDays?: number;
+    nextReviewAt?: string;
+  },
+): Promise<void> {
+  const path = `users/${uid}/flashcards/${cardId}`;
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+  if (updates.front !== undefined) {
+    payload.front = updates.front.trim().slice(0, BLUEPRINT_LIMITS.FLASHCARD_FRONT_MAX);
+  }
+  if (updates.back !== undefined) {
+    payload.back = updates.back.trim().slice(0, BLUEPRINT_LIMITS.FLASHCARD_BACK_MAX);
+  }
+  if (updates.priority !== undefined) {
+    payload.priority = updates.priority;
+  }
+  if (updates.hardness !== undefined) {
+    payload.hardness = updates.hardness;
+  }
+  if (updates.intervalDays !== undefined) {
+    const safeDays = Math.max(0, Math.min(36500, Math.round(updates.intervalDays)));
+    payload.intervalDays = safeDays;
+    payload.nextReviewAt =
+      updates.nextReviewAt || new Date(Date.now() + safeDays * 24 * 60 * 60 * 1000).toISOString();
+  } else if (updates.nextReviewAt !== undefined) {
+    payload.nextReviewAt = updates.nextReviewAt.slice(0, 64);
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', uid, 'flashcards', cardId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function deleteFlashcard(uid: string, cardId: string): Promise<void> {
   const path = `users/${uid}/flashcards/${cardId}`;
   try {
@@ -631,7 +835,95 @@ export async function deleteFlashcard(uid: string, cardId: string): Promise<void
   }
 }
 
-// --- Focus Sessions ---
+// --- Blurting Sessions ---
+export function subscribeBlurtSessions(uid: string, onData: (items: BlurtSession[]) => void): Unsubscribe {
+  const path = `users/${uid}/blurtSessions`;
+  const q = query(
+    collection(db, 'users', uid, 'blurtSessions'),
+    where('ownerId', '==', uid),
+    orderBy('createdAt', 'desc'),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      onData(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<BlurtSession, 'id'>) })));
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path),
+  );
+}
+
+export async function createBlurtSession(
+  uid: string,
+  input: {
+    subjectId?: string;
+    subjectName?: string;
+    chapterId?: string;
+    chapterTitle?: string;
+    sourceLabel: string;
+    blurtText: string;
+    durationSeconds: number;
+    summary: string;
+    strongPoints: string[];
+    weakPoints: BlurtWeakPoint[];
+    missedKeyFacts: string[];
+    dateKey: string;
+  },
+): Promise<string> {
+  const id = genId('blurt');
+  const path = `users/${uid}/blurtSessions/${id}`;
+  try {
+    await setDoc(doc(db, 'users', uid, 'blurtSessions', id), {
+      ownerId: uid,
+      subjectId: (input.subjectId || '').slice(0, 128),
+      subjectName: (input.subjectName || 'General Study').slice(0, 100),
+      chapterId: (input.chapterId || '').slice(0, 128),
+      chapterTitle: (input.chapterTitle || '').slice(0, 160),
+      sourceLabel: (input.sourceLabel.trim() || 'Study Material').slice(0, 200),
+      blurtText: input.blurtText.trim().slice(0, BLUEPRINT_LIMITS.BLURT_TEXT_MAX),
+      durationSeconds: Math.max(1, Math.min(86400, Math.round(input.durationSeconds))),
+      summary: input.summary.trim().slice(0, 2000),
+      strongPoints: input.strongPoints.slice(0, 20).map((s) => s.trim().slice(0, 600)),
+      weakPoints: input.weakPoints.slice(0, 20).map((w) => ({
+        topic: w.topic.trim().slice(0, 200),
+        gap: w.gap.trim().slice(0, 1000),
+        suggestedReview: w.suggestedReview.trim().slice(0, 1000),
+      })),
+      missedKeyFacts: input.missedKeyFacts.slice(0, 20).map((s) => s.trim().slice(0, 600)),
+      cardsGeneratedCount: 0,
+      dateKey: input.dateKey,
+      createdAt: serverTimestamp(),
+    });
+    return id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function updateBlurtSessionCardsCount(
+  uid: string,
+  blurtId: string,
+  cardsGeneratedCount: number,
+): Promise<void> {
+  const path = `users/${uid}/blurtSessions/${blurtId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'blurtSessions', blurtId), {
+      cardsGeneratedCount: Math.max(0, Math.min(100, Math.round(cardsGeneratedCount))),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteBlurtSession(uid: string, blurtId: string): Promise<void> {
+  const path = `users/${uid}/blurtSessions/${blurtId}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'blurtSessions', blurtId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// --- Focus & Active Recall Sessions ---
 export function subscribeFocusSessions(uid: string, onData: (items: FocusSession[]) => void): Unsubscribe {
   const path = `users/${uid}/focusSessions`;
   const q = query(
@@ -658,6 +950,8 @@ export async function logFocusSession(
     subjectId?: string;
     subjectName?: string;
     subjectColor?: string;
+    chapterId?: string;
+    chapterTitle?: string;
     durationSeconds: number;
     ambientSound: AmbientSoundId;
     completedAt: string;
@@ -676,6 +970,8 @@ export async function logFocusSession(
       subjectId: (input.subjectId || '').slice(0, 128),
       subjectName: (input.subjectName || 'General Study').slice(0, 100),
       subjectColor: (input.subjectColor || '#4B5563').slice(0, 24),
+      chapterId: (input.chapterId || '').slice(0, 128),
+      chapterTitle: (input.chapterTitle || '').slice(0, 160),
       durationSeconds: Math.max(1, Math.min(86400, Math.round(input.durationSeconds))),
       ambientSound: input.ambientSound,
       completedAt: input.completedAt.slice(0, 64),
@@ -720,7 +1016,7 @@ export async function createFocusRoom(
     topic?: string;
     visibility: RoomVisibility;
     password?: string;
-    timerMode: FocusMode;
+    timerMode: 'timer' | 'stopwatch';
     timerDurationSeconds: number;
     ambientSound: AmbientSoundId;
   },
@@ -900,7 +1196,7 @@ export function subscribeRoomMessages(roomId: string, onData: (list: RoomMessage
 export async function updateRoomTimerAndSound(
   roomId: string,
   updates: {
-    timerMode: FocusMode;
+    timerMode: 'timer' | 'stopwatch';
     timerDurationSeconds: number;
     timerStatus: RoomTimerStatus;
     timerStartedAtMs: number;

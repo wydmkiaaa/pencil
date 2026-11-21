@@ -16,6 +16,7 @@
         },
         "dailyGoalMinutes": { "type": "number" },
         "reviewIntervals": { "type": "object" },
+        "notificationSettings": { "type": "object" },
         "isPublic": { "type": "boolean" },
         "handle": { "type": "string", "minLength": 0, "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" },

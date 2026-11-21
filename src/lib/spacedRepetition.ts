@@ -1,41 +1,49 @@
-import type { Flashcard } from '../types/study';
+import {
+  DEFAULT_REVIEW_INTERVALS,
+  type DifficultyLevel,
+  type Flashcard,
+  type ReviewIntervalConfig,
+} from '../types/study';
 
-export type ReviewQuality = 1 | 3 | 4 | 5; // 1 = Again, 3 = Hard, 4 = Good, 5 = Easy
+export type ReviewRating = 'hard' | 'medium' | 'easy';
 
-export function calculateSm2Update(
+export function calculateFlashcardReviewUpdate(
   card: Pick<Flashcard, 'repetitions' | 'intervalDays' | 'easeFactor'>,
-  quality: ReviewQuality,
+  rating: ReviewRating,
+  config: ReviewIntervalConfig = DEFAULT_REVIEW_INTERVALS,
+  overrideDays?: number,
 ): {
   repetitions: number;
   intervalDays: number;
   easeFactor: number;
+  hardness: DifficultyLevel;
   nextReviewAt: string;
   lastReviewedAt: string;
 } {
-  let { repetitions, intervalDays, easeFactor } = card;
+  let { repetitions, easeFactor } = card;
 
-  if (quality < 3) {
-    repetitions = 0;
-    intervalDays = 1;
-  } else {
-    if (repetitions === 0) {
-      intervalDays = 1;
-    } else if (repetitions === 1) {
-      intervalDays = 6;
-    } else {
-      intervalDays = Math.round(intervalDays * easeFactor);
-    }
-    if (quality === 3) {
-      intervalDays = Math.max(1, Math.round(intervalDays * 0.8));
-    } else if (quality === 5) {
-      intervalDays = Math.max(2, Math.round(intervalDays * 1.3));
-    }
+  const baseDays =
+    rating === 'hard'
+      ? config.hardDays
+      : rating === 'medium'
+        ? config.midDays
+        : config.easyDays;
+
+  const intervalDays =
+    typeof overrideDays === 'number' && overrideDays >= 1
+      ? Math.max(1, Math.min(365, Math.round(overrideDays)))
+      : Math.max(1, Math.min(365, Math.round(baseDays)));
+
+  if (rating === 'hard') {
+    repetitions = Math.max(1, repetitions);
+    easeFactor = Math.max(1.3, Number((easeFactor - 0.15).toFixed(2)));
+  } else if (rating === 'medium') {
     repetitions += 1;
+    easeFactor = Math.max(1.3, Math.min(5.0, Number(easeFactor.toFixed(2))));
+  } else {
+    repetitions += 1;
+    easeFactor = Math.max(1.3, Math.min(5.0, Number((easeFactor + 0.15).toFixed(2))));
   }
-
-  const nextEase = easeFactor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
-  easeFactor = Math.max(1.3, Math.min(5.0, Number(nextEase.toFixed(2))));
-  intervalDays = Math.max(1, Math.min(36500, intervalDays));
 
   const now = new Date();
   const nextDate = new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000);
@@ -44,6 +52,7 @@ export function calculateSm2Update(
     repetitions,
     intervalDays,
     easeFactor,
+    hardness: rating,
     nextReviewAt: nextDate.toISOString(),
     lastReviewedAt: now.toISOString(),
   };
@@ -69,12 +78,46 @@ export function formatClock(totalSeconds: number): string {
 
 export function formatDurationShort(totalSeconds: number): string {
   const mins = Math.round(totalSeconds / 60);
+  if (mins === 0 && totalSeconds > 0) {
+    return `${Math.round(totalSeconds)}s`;
+  }
   if (mins < 60) {
     return `${mins}m`;
   }
   const hrs = Math.floor(mins / 60);
   const rem = mins % 60;
   return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+}
+
+export function formatVideoTimestamp(totalSeconds?: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds || 0));
+  const hrs = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+export function parseVideoDurationInput(raw: string): number {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0;
+  if (trimmed.includes(':')) {
+    const parts = trimmed.split(':').map((p) => Number(p.trim()));
+    if (parts.some((n) => Number.isNaN(n) || n < 0)) return 0;
+    if (parts.length === 2) {
+      return Math.round(parts[0] * 60 + parts[1]);
+    }
+    if (parts.length === 3) {
+      return Math.round(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+    }
+    return 0;
+  }
+  const num = Number(trimmed);
+  if (Number.isNaN(num) || num < 0) return 0;
+  // Treat plain numbers as minutes (e.g. "55" -> 55 min = 3300s, "60" -> 1 hour)
+  return Math.round(num * 60);
 }
 
 export async function sha256Hex(input: string): Promise<string> {

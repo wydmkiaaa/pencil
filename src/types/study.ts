@@ -1,12 +1,14 @@
 export type PastelThemeId = 'stone' | 'sage' | 'blush' | 'sky' | 'lavender' | 'butter';
 
-export type TaskPriority = 'low' | 'medium' | 'high';
+export type DifficultyLevel = 'easy' | 'medium' | 'hard';
+export type PriorityLevel = 'low' | 'medium' | 'high';
+export type TaskPriority = PriorityLevel;
 export type TaskStatus = 'not_started' | 'working' | 'completed';
 
 export type AmbientSoundId = 'none' | 'brown' | 'pink' | 'white' | 'rain' | 'forest';
 
-export type FocusMode = 'timer' | 'stopwatch';
-export type FocusContextType = 'solo' | 'public_room' | 'private_room';
+export type FocusMode = 'timer' | 'stopwatch' | 'flashcards' | 'blurting';
+export type FocusContextType = 'solo' | 'public_room' | 'private_room' | 'active_recall';
 export type RoomVisibility = 'public' | 'private';
 export type RoomTimerStatus = 'idle' | 'running' | 'paused';
 export type ParticipantStatus = 'focusing' | 'break' | 'idle';
@@ -20,11 +22,60 @@ export type NavTabId =
   | 'progress'
   | 'settings';
 
+export interface ReviewIntervalConfig {
+  hardDays: number;
+  midDays: number;
+  easyDays: number;
+}
+
+export const DEFAULT_REVIEW_INTERVALS: ReviewIntervalConfig = {
+  hardDays: 1,
+  midDays: 3,
+  easyDays: 7,
+};
+
+export interface NotificationSettings {
+  taskReminders: boolean;
+  dueFlashcards: boolean;
+  sessionChimes: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  taskReminders: true,
+  dueFlashcards: true,
+  sessionChimes: true,
+};
+
+export const PRIORITY_ORDER_WEIGHT: Record<PriorityLevel, number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+export const HARDNESS_ORDER_WEIGHT: Record<DifficultyLevel, number> = {
+  hard: 3,
+  medium: 2,
+  easy: 1,
+};
+
+export const PRIORITY_LABELS: Record<PriorityLevel, string> = {
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
+
+export const HARDNESS_LABELS: Record<DifficultyLevel, string> = {
+  easy: 'Easy',
+  medium: 'Mid',
+  hard: 'Hard',
+};
+
 export const BLUEPRINT_LIMITS = {
   DISPLAY_NAME_MAX: 80,
   HANDLE_MAX: 32,
   BIO_MAX: 300,
   AVATAR_URL_MAX: 100000,
+  PHOTO_DATA_URL_MAX: 340000,
   TASK_TITLE_MAX: 200,
   TASK_NOTES_MAX: 1000,
   GOAL_TITLE_MAX: 160,
@@ -36,6 +87,7 @@ export const BLUEPRINT_LIMITS = {
   VIDEO_URL_MAX: 500,
   FLASHCARD_FRONT_MAX: 1000,
   FLASHCARD_BACK_MAX: 2000,
+  BLURT_TEXT_MAX: 20000,
   ROOM_NAME_MAX: 100,
   ROOM_TOPIC_MAX: 160,
   ROOM_MESSAGE_MAX: 280,
@@ -49,6 +101,8 @@ export interface UserProfile {
   bio?: string;
   pastelTheme: PastelThemeId;
   dailyGoalMinutes: number;
+  reviewIntervals?: ReviewIntervalConfig;
+  notificationSettings?: NotificationSettings;
   isPublic?: boolean;
   handle?: string;
   createdAt?: unknown;
@@ -84,6 +138,7 @@ export interface StudyTask {
   title: string;
   notes?: string;
   priority: TaskPriority;
+  hardness?: DifficultyLevel;
   status: TaskStatus;
   subjectId?: string;
   dueAt?: string;
@@ -108,13 +163,19 @@ export interface Subject {
   name: string;
   color: string;
   description?: string;
+  priority?: PriorityLevel;
+  hardness?: DifficultyLevel;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
 
 export interface VideoLecture {
+  id?: string;
   title: string;
   url: string;
+  totalSeconds?: number;
+  watchedSeconds?: number;
+  lastWatchedAt?: string;
 }
 
 export interface PdfSourceMeta {
@@ -129,11 +190,23 @@ export interface Chapter {
   subjectId: string;
   title: string;
   order: number;
+  priority?: PriorityLevel;
+  hardness?: DifficultyLevel;
   notes: string;
   videoLectures: VideoLecture[];
   pdfSources: PdfSourceMeta[];
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface ChapterPhoto {
+  id: string;
+  ownerId: string;
+  subjectId: string;
+  chapterId: string;
+  title: string;
+  dataUrl: string;
+  createdAt?: unknown;
 }
 
 export interface Flashcard {
@@ -143,6 +216,8 @@ export interface Flashcard {
   chapterId?: string;
   front: string;
   back: string;
+  priority?: PriorityLevel;
+  hardness?: DifficultyLevel;
   repetitions: number;
   intervalDays: number;
   easeFactor: number;
@@ -150,6 +225,31 @@ export interface Flashcard {
   lastReviewedAt?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface BlurtWeakPoint {
+  topic: string;
+  gap: string;
+  suggestedReview: string;
+}
+
+export interface BlurtSession {
+  id: string;
+  ownerId: string;
+  subjectId?: string;
+  subjectName?: string;
+  chapterId?: string;
+  chapterTitle?: string;
+  sourceLabel: string;
+  blurtText: string;
+  durationSeconds: number;
+  summary: string;
+  strongPoints: string[];
+  weakPoints: BlurtWeakPoint[];
+  missedKeyFacts: string[];
+  cardsGeneratedCount?: number;
+  dateKey: string;
+  createdAt?: unknown;
 }
 
 export interface FocusSession {
@@ -162,6 +262,8 @@ export interface FocusSession {
   subjectId?: string;
   subjectName?: string;
   subjectColor?: string;
+  chapterId?: string;
+  chapterTitle?: string;
   durationSeconds: number;
   ambientSound: AmbientSoundId;
   completedAt: string;
@@ -177,7 +279,7 @@ export interface FocusRoom {
   topic?: string;
   visibility: RoomVisibility;
   passwordHash: string;
-  timerMode: FocusMode;
+  timerMode: 'timer' | 'stopwatch';
   timerDurationSeconds: number;
   timerStatus: RoomTimerStatus;
   timerStartedAtMs: number;
