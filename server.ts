@@ -9,7 +9,7 @@ import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 function getAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -143,7 +143,7 @@ async function generateJsonWithFallback<T>(
   throw lastError instanceof Error ? lastError : new Error('AI service is temporarily unavailable.');
 }
 
-async function startServer() {
+export function createApiApp() {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
 
@@ -438,6 +438,11 @@ async function startServer() {
     }
   });
 
+  return app;
+}
+
+async function startServer() {
+  const app = createApiApp();
   const httpServer = http.createServer(app);
 
   if (process.env.NODE_ENV !== 'production') {
@@ -470,7 +475,9 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
