@@ -115,6 +115,8 @@ export async function ensureUserProfile(
       const expectedBio = (existing.bio || '').trim().slice(0, BLUEPRINT_LIMITS.BIO_MAX);
       const expectedTheme = existing.pastelTheme || 'stone';
       const expectedIsPublic = Boolean(existing.isPublic);
+      const expectedShareStudyGoal = existing.shareStudyGoal ?? true;
+      const expectedDailyGoal = Math.max(15, Math.min(720, Math.round(Number(existing.dailyGoalMinutes) || 120)));
 
       const pubSnap = await getDoc(pubRef);
       if (!pubSnap.exists()) {
@@ -126,6 +128,8 @@ export async function ensureUserProfile(
           bio: expectedBio,
           pastelTheme: expectedTheme,
           isPublic: expectedIsPublic,
+          dailyGoalMinutes: expectedDailyGoal,
+          shareStudyGoal: expectedShareStudyGoal,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -137,7 +141,9 @@ export async function ensureUserProfile(
           (pubData.avatarUrl || '') !== expectedAvatarUrl ||
           (pubData.bio || '') !== expectedBio ||
           (pubData.pastelTheme || 'stone') !== expectedTheme ||
-          Boolean(pubData.isPublic) !== expectedIsPublic;
+          Boolean(pubData.isPublic) !== expectedIsPublic ||
+          (pubData.shareStudyGoal ?? true) !== expectedShareStudyGoal ||
+          pubData.dailyGoalMinutes !== expectedDailyGoal;
         if (needsSync) {
           await updateDoc(pubRef, {
             handle: resolvedHandle,
@@ -146,6 +152,8 @@ export async function ensureUserProfile(
             bio: expectedBio,
             pastelTheme: expectedTheme,
             isPublic: expectedIsPublic,
+            dailyGoalMinutes: expectedDailyGoal,
+            shareStudyGoal: expectedShareStudyGoal,
             updatedAt: serverTimestamp(),
           });
         }
@@ -165,6 +173,7 @@ export async function ensureUserProfile(
       reviewIntervals: { ...DEFAULT_REVIEW_INTERVALS },
       notificationSettings: { ...DEFAULT_NOTIFICATION_SETTINGS },
       isPublic: false,
+      shareStudyGoal: true,
       handle,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -178,6 +187,8 @@ export async function ensureUserProfile(
       bio: '',
       pastelTheme: 'stone',
       isPublic: false,
+      dailyGoalMinutes: 120,
+      shareStudyGoal: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -212,6 +223,7 @@ export async function updateUserProfile(
       | 'reviewIntervals'
       | 'notificationSettings'
       | 'isPublic'
+      | 'shareStudyGoal'
       | 'handle'
     >
   >,
@@ -247,6 +259,9 @@ export async function updateUserProfile(
   if (updates.isPublic !== undefined) {
     payload.isPublic = Boolean(updates.isPublic);
   }
+  if (updates.shareStudyGoal !== undefined) {
+    payload.shareStudyGoal = Boolean(updates.shareStudyGoal);
+  }
   if (updates.handle !== undefined) {
     payload.handle = normalizeHandle(updates.handle, uid);
   }
@@ -272,6 +287,7 @@ export async function updateUserProfile(
         notificationSettings:
           (payload.notificationSettings as NotificationSettings) || { ...DEFAULT_NOTIFICATION_SETTINGS },
         isPublic: typeof payload.isPublic === 'boolean' ? payload.isPublic : false,
+        shareStudyGoal: typeof payload.shareStudyGoal === 'boolean' ? payload.shareStudyGoal : true,
         handle:
           typeof payload.handle === 'string'
             ? payload.handle
@@ -288,6 +304,8 @@ export async function updateUserProfile(
 
   const touchesPublic =
     updates.isPublic !== undefined ||
+    updates.shareStudyGoal !== undefined ||
+    updates.dailyGoalMinutes !== undefined ||
     updates.handle !== undefined ||
     updates.displayName !== undefined ||
     updates.avatarUrl !== undefined ||
@@ -307,6 +325,9 @@ export async function updateUserProfile(
   }
 
   const handleVal = normalizeHandle(latest.handle || latest.displayName, uid);
+  const dailyGoalVal = Math.max(15, Math.min(720, Math.round(Number(latest.dailyGoalMinutes) || 120)));
+  const shareGoalVal = latest.shareStudyGoal ?? true;
+
   if (pubExists) {
     try {
       await updateDoc(pubRef, {
@@ -316,6 +337,8 @@ export async function updateUserProfile(
         bio: (latest.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
         pastelTheme: latest.pastelTheme || 'stone',
         isPublic: Boolean(latest.isPublic),
+        dailyGoalMinutes: dailyGoalVal,
+        shareStudyGoal: shareGoalVal,
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
@@ -331,6 +354,8 @@ export async function updateUserProfile(
         bio: (latest.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
         pastelTheme: latest.pastelTheme || 'stone',
         isPublic: Boolean(latest.isPublic),
+        dailyGoalMinutes: dailyGoalVal,
+        shareStudyGoal: shareGoalVal,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -763,6 +788,32 @@ export async function updateSubjectRating(
   }
 }
 
+export async function updateSubjectDetails(
+  uid: string,
+  subjectId: string,
+  updates: {
+    name: string;
+    color: string;
+    description?: string;
+    priority: PriorityLevel;
+    hardness: DifficultyLevel;
+  },
+): Promise<void> {
+  const path = `users/${uid}/subjects/${subjectId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'subjects', subjectId), {
+      name: updates.name.trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_NAME_MAX) || 'Untitled Subject',
+      color: updates.color.slice(0, 24),
+      description: (updates.description || '').trim().slice(0, BLUEPRINT_LIMITS.SUBJECT_DESC_MAX),
+      priority: updates.priority,
+      hardness: updates.hardness,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function deleteSubject(uid: string, subjectId: string): Promise<void> {
   const path = `users/${uid}/subjects/${subjectId}`;
   try {
@@ -828,6 +879,30 @@ export async function updateChapterRating(
     await updateDoc(doc(db, 'users', uid, 'chapters', chapterId), {
       priority,
       hardness,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateChapterDetails(
+  uid: string,
+  chapterId: string,
+  updates: {
+    title: string;
+    order: number;
+    priority: PriorityLevel;
+    hardness: DifficultyLevel;
+  },
+): Promise<void> {
+  const path = `users/${uid}/chapters/${chapterId}`;
+  try {
+    await updateDoc(doc(db, 'users', uid, 'chapters', chapterId), {
+      title: updates.title.trim().slice(0, BLUEPRINT_LIMITS.CHAPTER_TITLE_MAX) || 'Untitled Chapter',
+      order: Math.max(0, Math.min(10000, Math.round(updates.order))),
+      priority: updates.priority,
+      hardness: updates.hardness,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

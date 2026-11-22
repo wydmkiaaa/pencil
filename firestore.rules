@@ -54,7 +54,7 @@ service cloud.firestore {
     // --- Entity Validation Blueprints ---
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'displayName', 'pastelTheme', 'dailyGoalMinutes', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'notificationSettings', 'isPublic', 'handle', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'notificationSettings', 'isPublic', 'shareStudyGoal', 'handle', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
@@ -66,6 +66,7 @@ service cloud.firestore {
         && (!('reviewIntervals' in data) || isValidReviewIntervals(data.reviewIntervals))
         && (!('notificationSettings' in data) || isValidNotificationSettings(data.notificationSettings))
         && (!('isPublic' in data) || data.isPublic is bool)
+        && (!('shareStudyGoal' in data) || data.shareStudyGoal is bool)
         && (!('handle' in data) || (data.handle is string && data.handle.size() <= 32))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -73,7 +74,7 @@ service cloud.firestore {
 
     function isValidPublicProfile(data) {
       return data.keys().hasAll(['uid', 'handle', 'displayName', 'pastelTheme', 'isPublic', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'handle', 'displayName', 'avatarUrl', 'bio', 'pastelTheme', 'isPublic', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'handle', 'displayName', 'avatarUrl', 'bio', 'pastelTheme', 'isPublic', 'dailyGoalMinutes', 'shareStudyGoal', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && data.handle is string && data.handle.size() >= 3 && data.handle.size() <= 32 && data.handle.matches('^[a-z0-9_\\-]+$')
@@ -82,6 +83,8 @@ service cloud.firestore {
         && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
         && data.pastelTheme in ['stone', 'sage', 'blush', 'sky', 'lavender', 'butter']
         && data.isPublic is bool
+        && (!('dailyGoalMinutes' in data) || (data.dailyGoalMinutes is number && data.dailyGoalMinutes >= 15 && data.dailyGoalMinutes <= 720))
+        && (!('shareStudyGoal' in data) || data.shareStudyGoal is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -369,7 +372,7 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'notificationSettings', 'isPublic', 'handle', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'avatarUrl', 'bio', 'pastelTheme', 'dailyGoalMinutes', 'reviewIntervals', 'notificationSettings', 'isPublic', 'shareStudyGoal', 'handle', 'updatedAt']);
       allow delete: if false;
 
       match /friends/{friendId} {
@@ -684,7 +687,7 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'avatarUrl', 'bio', 'pastelTheme', 'isPublic', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'avatarUrl', 'bio', 'pastelTheme', 'isPublic', 'dailyGoalMinutes', 'shareStudyGoal', 'updatedAt']);
       allow delete: if isOwner(userId) && isValidId(userId);
     }
 

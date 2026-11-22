@@ -104,6 +104,7 @@ export interface UserProfile {
   reviewIntervals?: ReviewIntervalConfig;
   notificationSettings?: NotificationSettings;
   isPublic?: boolean;
+  shareStudyGoal?: boolean;
   handle?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -117,6 +118,8 @@ export interface PublicProfile {
   bio?: string;
   pastelTheme: PastelThemeId;
   isPublic: boolean;
+  dailyGoalMinutes?: number;
+  shareStudyGoal?: boolean;
   createdAt?: unknown;
   updatedAt?: unknown;
 }

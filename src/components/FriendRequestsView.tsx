@@ -184,29 +184,36 @@ export const FriendRequestsView: React.FC<FriendRequestsViewProps> = ({
               No pending friend requests right now. Requests must be approved here before learners are added to your circle.
             </p>
           ) : (
-            pendingIncoming.map((req) => (
-              <div key={req.id} className="py-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  {req.fromAvatarUrl ? (
-                    <img
-                      src={req.fromAvatarUrl}
-                      alt={req.fromDisplayName}
-                      referrerPolicy="no-referrer"
-                      className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
-                    />
-                  ) : (
-                    <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
-                      {getInitials(req.fromDisplayName)}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold truncate">{req.fromDisplayName}</div>
-                    <div className="text-xs text-[var(--pastel-muted)] truncate">
-                      @{req.fromHandle}
-                      {req.fromBio ? ` · ${req.fromBio}` : ''}
+            pendingIncoming.map((req) => {
+              const senderPub = publicProfileByUid.get(req.fromUid);
+              const canShowSenderBio = Boolean(senderPub?.isPublic) || friendUidSet.has(req.fromUid);
+              return (
+                <div key={req.id} className="py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {req.fromAvatarUrl ? (
+                      <img
+                        src={req.fromAvatarUrl}
+                        alt={req.fromDisplayName}
+                        referrerPolicy="no-referrer"
+                        className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
+                        {getInitials(req.fromDisplayName)}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold truncate">{req.fromDisplayName}</div>
+                      <div className="text-xs text-[var(--pastel-muted)] truncate">
+                        @{req.fromHandle}
+                        {canShowSenderBio && req.fromBio
+                          ? ` · ${req.fromBio}`
+                          : !canShowSenderBio
+                            ? ' · Private account'
+                            : ''}
+                      </div>
                     </div>
                   </div>
-                </div>
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button
@@ -229,7 +236,8 @@ export const FriendRequestsView: React.FC<FriendRequestsViewProps> = ({
                   </button>
                 </div>
               </div>
-            ))
+              );
+            })
           ))}
 
         {activeTab === 'approved' &&

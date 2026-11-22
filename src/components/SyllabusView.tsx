@@ -27,10 +27,12 @@ import {
   deleteChapterPhoto,
   deleteFlashcard,
   deleteSubject,
+  updateChapterDetails,
   updateChapterNotesAndPdfs,
   updateChapterRating,
   updateChapterVideos,
   updateFlashcardDetails,
+  updateSubjectDetails,
   updateSubjectRating,
 } from '../lib/studyRepo';
 import { PastelSelect } from './PastelSelect';
@@ -112,10 +114,29 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
   const [subjPriority, setSubjPriority] = useState<PriorityLevel>('medium');
   const [subjHardness, setSubjHardness] = useState<DifficultyLevel>('medium');
 
+  // Edit Subject modal
+  const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
+  const [editSubjName, setEditSubjName] = useState('');
+  const [editSubjColor, setEditSubjColor] = useState(SUBJECT_COLOR_PALETTE[1].hex);
+  const [editSubjDesc, setEditSubjDesc] = useState('');
+  const [editSubjPriority, setEditSubjPriority] = useState<PriorityLevel>('medium');
+  const [editSubjHardness, setEditSubjHardness] = useState<DifficultyLevel>('medium');
+  const [savingSubjectEdit, setSavingSubjectEdit] = useState(false);
+  const [subjectEditError, setSubjectEditError] = useState<string | null>(null);
+
   // Create Chapter form
   const [chapterTitle, setChapterTitle] = useState('');
   const [chapterPriority, setChapterPriority] = useState<PriorityLevel>('medium');
   const [chapterHardness, setChapterHardness] = useState<DifficultyLevel>('medium');
+
+  // Edit Chapter modal
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [editChapTitle, setEditChapTitle] = useState('');
+  const [editChapOrder, setEditChapOrder] = useState('1');
+  const [editChapPriority, setEditChapPriority] = useState<PriorityLevel>('medium');
+  const [editChapHardness, setEditChapHardness] = useState<DifficultyLevel>('medium');
+  const [savingChapterEdit, setSavingChapterEdit] = useState(false);
+  const [chapterEditError, setChapterEditError] = useState<string | null>(null);
 
   // Chapter workspace state
   const [notesDraft, setNotesDraft] = useState('');
@@ -277,6 +298,43 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
     setSelectedSubjectId(newId);
   };
 
+  const startEditSubject = (subject: Subject) => {
+    setEditingSubjectId(subject.id);
+    setEditSubjName(subject.name);
+    setEditSubjColor(subject.color || SUBJECT_COLOR_PALETTE[1].hex);
+    setEditSubjDesc(subject.description || '');
+    setEditSubjPriority(subject.priority || 'medium');
+    setEditSubjHardness(subject.hardness || 'medium');
+    setSubjectEditError(null);
+  };
+
+  const handleSaveSubjectEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSubjectId) return;
+    if (!editSubjName.trim()) {
+      setSubjectEditError('Subject name cannot be empty.');
+      return;
+    }
+    setSavingSubjectEdit(true);
+    setSubjectEditError(null);
+    try {
+      await updateSubjectDetails(uid, editingSubjectId, {
+        name: editSubjName,
+        color: editSubjColor,
+        description: editSubjDesc,
+        priority: editSubjPriority,
+        hardness: editSubjHardness,
+      });
+      setEditingSubjectId(null);
+    } catch (err) {
+      setSubjectEditError(
+        err instanceof Error ? err.message : 'Unable to save subject settings right now.',
+      );
+    } finally {
+      setSavingSubjectEdit(false);
+    }
+  };
+
   const handleCreateChapter = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSubjectId || !chapterTitle.trim()) return;
@@ -292,6 +350,45 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
     setChapterPriority('medium');
     setChapterHardness('medium');
     setSelectedChapterId(newId);
+  };
+
+  const startEditChapter = (chapter: Chapter) => {
+    setEditingChapterId(chapter.id);
+    setEditChapTitle(chapter.title);
+    setEditChapOrder(String(chapter.order ?? 1));
+    setEditChapPriority(chapter.priority || 'medium');
+    setEditChapHardness(chapter.hardness || 'medium');
+    setChapterEditError(null);
+  };
+
+  const handleSaveChapterEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingChapterId) return;
+    if (!editChapTitle.trim()) {
+      setChapterEditError('Chapter title cannot be empty.');
+      return;
+    }
+    const parsedOrder = Number(editChapOrder);
+    const safeOrder = Number.isFinite(parsedOrder)
+      ? Math.max(0, Math.min(10000, Math.round(parsedOrder)))
+      : 1;
+    setSavingChapterEdit(true);
+    setChapterEditError(null);
+    try {
+      await updateChapterDetails(uid, editingChapterId, {
+        title: editChapTitle,
+        order: safeOrder,
+        priority: editChapPriority,
+        hardness: editChapHardness,
+      });
+      setEditingChapterId(null);
+    } catch (err) {
+      setChapterEditError(
+        err instanceof Error ? err.message : 'Unable to save chapter settings right now.',
+      );
+    } finally {
+      setSavingChapterEdit(false);
+    }
   };
 
   const handleSaveNotes = async () => {
@@ -752,62 +849,85 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
                         </div>
                       </div>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void deleteSubject(uid, s.id)}
-                      aria-label={`Delete ${s.name}`}
-                      className="p-1 text-[var(--pastel-muted)] hover:text-red-600 cursor-pointer shrink-0"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => startEditSubject(s)}
+                        aria-label={`Edit ${s.name} settings`}
+                        title="Edit subject settings"
+                        className="p-1 text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] cursor-pointer shrink-0"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteSubject(uid, s.id)}
+                        aria-label={`Delete ${s.name}`}
+                        className="p-1 text-[var(--pastel-muted)] hover:text-red-600 cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
 
               {activeSubject && (
-                <div className="pt-2 mt-2 border-t border-[var(--pastel-border)] flex items-center justify-between gap-2 px-1">
-                  <span className="text-[11px] font-bold text-[var(--pastel-muted)] shrink-0">
-                    Rating
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <PastelSelect
-                      value={activeSubject.priority || 'medium'}
-                      onChange={(val) =>
-                        void updateSubjectRating(
-                          uid,
-                          activeSubject.id,
-                          val as PriorityLevel,
-                          activeSubject.hardness || 'medium',
-                        )
-                      }
-                      ariaLabel="Selected subject priority"
-                      variant="pill"
-                      className="min-w-[96px]"
-                      options={[
-                        { value: 'high', label: 'High Prio' },
-                        { value: 'medium', label: 'Mid Prio' },
-                        { value: 'low', label: 'Low Prio' },
-                      ]}
-                    />
-                    <PastelSelect
-                      value={activeSubject.hardness || 'medium'}
-                      onChange={(val) =>
-                        void updateSubjectRating(
-                          uid,
-                          activeSubject.id,
-                          activeSubject.priority || 'medium',
-                          val as DifficultyLevel,
-                        )
-                      }
-                      ariaLabel="Selected subject hardness"
-                      variant="pill"
-                      className="min-w-[82px]"
-                      options={[
-                        { value: 'hard', label: 'Hard' },
-                        { value: 'medium', label: 'Mid' },
-                        { value: 'easy', label: 'Easy' },
-                      ]}
-                    />
+                <div className="pt-2.5 mt-2 border-t border-[var(--pastel-border)] space-y-2 px-1">
+                  {activeSubject.description && (
+                    <p className="text-[11px] text-[var(--pastel-muted)] leading-snug">
+                      {activeSubject.description}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startEditSubject(activeSubject)}
+                      className="text-[11px] font-bold text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] inline-flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Pencil className="w-3 h-3" />
+                      <span>Edit</span>
+                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <PastelSelect
+                        value={activeSubject.priority || 'medium'}
+                        onChange={(val) =>
+                          void updateSubjectRating(
+                            uid,
+                            activeSubject.id,
+                            val as PriorityLevel,
+                            activeSubject.hardness || 'medium',
+                          )
+                        }
+                        ariaLabel="Selected subject priority"
+                        variant="pill"
+                        className="min-w-[96px]"
+                        options={[
+                          { value: 'high', label: 'High Prio' },
+                          { value: 'medium', label: 'Mid Prio' },
+                          { value: 'low', label: 'Low Prio' },
+                        ]}
+                      />
+                      <PastelSelect
+                        value={activeSubject.hardness || 'medium'}
+                        onChange={(val) =>
+                          void updateSubjectRating(
+                            uid,
+                            activeSubject.id,
+                            activeSubject.priority || 'medium',
+                            val as DifficultyLevel,
+                          )
+                        }
+                        ariaLabel="Selected subject hardness"
+                        variant="pill"
+                        className="min-w-[82px]"
+                        options={[
+                          { value: 'hard', label: 'Hard' },
+                          { value: 'medium', label: 'Mid' },
+                          { value: 'easy', label: 'Easy' },
+                        ]}
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -910,14 +1030,25 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
                               {PRIORITY_LABELS[cPrio]} · {HARDNESS_LABELS[cHard]}
                             </div>
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => void deleteChapter(uid, ch.id)}
-                            aria-label={`Delete ${ch.title}`}
-                            className="p-1 text-[var(--pastel-muted)] hover:text-red-600 cursor-pointer shrink-0"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => startEditChapter(ch)}
+                              aria-label={`Edit ${ch.title} settings`}
+                              title="Edit chapter settings"
+                              className="p-1 text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] cursor-pointer shrink-0"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteChapter(uid, ch.id)}
+                              aria-label={`Delete ${ch.title}`}
+                              className="p-1 text-[var(--pastel-muted)] hover:text-red-600 cursor-pointer shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       );
                     })
@@ -949,7 +1080,18 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
                         />
                         <span>{activeSubject?.name}</span>
                       </div>
-                      <h2 className="text-xl font-extrabold tracking-tight">{activeChapter.title}</h2>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-xl font-extrabold tracking-tight">{activeChapter.title}</h2>
+                        <button
+                          type="button"
+                          onClick={() => startEditChapter(activeChapter)}
+                          aria-label="Edit chapter settings"
+                          className="px-2.5 py-1 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] text-[11px] font-bold text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>Edit</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
@@ -1662,6 +1804,258 @@ export const SyllabusView: React.FC<SyllabusViewProps> = ({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Edit Subject Settings Modal */}
+      {editingSubjectId && (
+        <div
+          className="fixed inset-0 z-50 bg-black/35 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setEditingSubjectId(null)}
+        >
+          <form
+            onSubmit={handleSaveSubjectEdit}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl shadow-xl p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-extrabold tracking-tight">Edit Subject Settings</h3>
+                <p className="text-xs text-[var(--pastel-muted)]">
+                  Update subject name, syllabus goal, color code, priority, or hardness.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingSubjectId(null)}
+                className="p-2 rounded-full hover:bg-[var(--pastel-soft)] text-[var(--pastel-muted)] cursor-pointer"
+                aria-label="Close edit subject modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block space-y-1">
+                <span className="text-xs font-bold text-[var(--pastel-muted)]">Subject Name</span>
+                <input
+                  type="text"
+                  required
+                  value={editSubjName}
+                  onChange={(e) => setEditSubjName(e.target.value)}
+                  placeholder="Subject name"
+                  maxLength={BLUEPRINT_LIMITS.SUBJECT_NAME_MAX}
+                  className="w-full px-4 py-2 text-sm rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+                />
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-xs font-bold text-[var(--pastel-muted)]">
+                  Short Syllabus Goal / Course Code
+                </span>
+                <input
+                  type="text"
+                  value={editSubjDesc}
+                  onChange={(e) => setEditSubjDesc(e.target.value)}
+                  placeholder="Optional goal or course code"
+                  maxLength={BLUEPRINT_LIMITS.SUBJECT_DESC_MAX}
+                  className="w-full px-4 py-2 text-sm rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-[var(--pastel-muted)]">Priority</span>
+                  <PastelSelect
+                    value={editSubjPriority}
+                    onChange={(val) => setEditSubjPriority(val as PriorityLevel)}
+                    ariaLabel="Edit subject priority"
+                    variant="field"
+                    className="w-full"
+                    options={[
+                      { value: 'high', label: 'High Priority' },
+                      { value: 'medium', label: 'Mid Priority' },
+                      { value: 'low', label: 'Low Priority' },
+                    ]}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-[var(--pastel-muted)]">Hardness</span>
+                  <PastelSelect
+                    value={editSubjHardness}
+                    onChange={(val) => setEditSubjHardness(val as DifficultyLevel)}
+                    ariaLabel="Edit subject hardness"
+                    variant="field"
+                    className="w-full"
+                    options={[
+                      { value: 'hard', label: 'Hard' },
+                      { value: 'medium', label: 'Mid Hardness' },
+                      { value: 'easy', label: 'Easy' },
+                    ]}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-[var(--pastel-muted)]">Color Code</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {SUBJECT_COLOR_PALETTE.map((swatch) => (
+                    <button
+                      key={swatch.hex}
+                      type="button"
+                      onClick={() => setEditSubjColor(swatch.hex)}
+                      aria-label={swatch.name}
+                      className={`w-6 h-6 rounded-full cursor-pointer transition-transform ${
+                        editSubjColor === swatch.hex
+                          ? 'ring-2 ring-offset-2 ring-[var(--pastel-ink)] scale-110'
+                          : ''
+                      }`}
+                      style={{ backgroundColor: swatch.hex }}
+                    />
+                  ))}
+                  <input
+                    type="color"
+                    value={editSubjColor}
+                    onChange={(e) => setEditSubjColor(e.target.value)}
+                    aria-label="Custom edit subject color"
+                    className="w-7 h-7 rounded-full cursor-pointer border-0 bg-transparent"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {subjectEditError && (
+              <p className="text-xs font-bold text-red-700">{subjectEditError}</p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingSubjectId(null)}
+                className="px-4 py-2 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingSubjectEdit || !editSubjName.trim()}
+                className="px-5 py-2 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold hover:opacity-90 cursor-pointer disabled:opacity-50"
+              >
+                {savingSubjectEdit ? 'Saving...' : 'Save Subject Settings'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Chapter Settings Modal */}
+      {editingChapterId && (
+        <div
+          className="fixed inset-0 z-50 bg-black/35 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setEditingChapterId(null)}
+        >
+          <form
+            onSubmit={handleSaveChapterEdit}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl shadow-xl p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-extrabold tracking-tight">Edit Chapter Settings</h3>
+                <p className="text-xs text-[var(--pastel-muted)]">
+                  Adjust chapter title, sequence order, priority, and hardness.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingChapterId(null)}
+                className="p-2 rounded-full hover:bg-[var(--pastel-soft)] text-[var(--pastel-muted)] cursor-pointer"
+                aria-label="Close edit chapter modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block space-y-1">
+                <span className="text-xs font-bold text-[var(--pastel-muted)]">Chapter Title</span>
+                <input
+                  type="text"
+                  required
+                  value={editChapTitle}
+                  onChange={(e) => setEditChapTitle(e.target.value)}
+                  placeholder="Chapter title"
+                  maxLength={BLUEPRINT_LIMITS.CHAPTER_TITLE_MAX}
+                  className="w-full px-4 py-2 text-sm rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+                />
+              </label>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <label className="block space-y-1">
+                  <span className="text-xs font-bold text-[var(--pastel-muted)]">Order #</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10000}
+                    value={editChapOrder}
+                    onChange={(e) => setEditChapOrder(e.target.value)}
+                    className="w-full px-3 py-2 text-sm font-mono-tabular rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
+                  />
+                </label>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-[var(--pastel-muted)]">Priority</span>
+                  <PastelSelect
+                    value={editChapPriority}
+                    onChange={(val) => setEditChapPriority(val as PriorityLevel)}
+                    ariaLabel="Edit chapter priority"
+                    variant="field"
+                    className="w-full"
+                    options={[
+                      { value: 'high', label: 'High' },
+                      { value: 'medium', label: 'Mid' },
+                      { value: 'low', label: 'Low' },
+                    ]}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-xs font-bold text-[var(--pastel-muted)]">Hardness</span>
+                  <PastelSelect
+                    value={editChapHardness}
+                    onChange={(val) => setEditChapHardness(val as DifficultyLevel)}
+                    ariaLabel="Edit chapter hardness"
+                    variant="field"
+                    className="w-full"
+                    options={[
+                      { value: 'hard', label: 'Hard' },
+                      { value: 'medium', label: 'Mid' },
+                      { value: 'easy', label: 'Easy' },
+                    ]}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {chapterEditError && (
+              <p className="text-xs font-bold text-red-700">{chapterEditError}</p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingChapterId(null)}
+                className="px-4 py-2 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingChapterEdit || !editChapTitle.trim()}
+                className="px-5 py-2 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold hover:opacity-90 cursor-pointer disabled:opacity-50"
+              >
+                {savingChapterEdit ? 'Saving...' : 'Save Chapter Settings'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
