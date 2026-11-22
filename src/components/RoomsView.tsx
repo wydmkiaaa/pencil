@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -14,7 +14,7 @@ import {
   Users,
   Volume2,
 } from 'lucide-react';
-import { AMBIENT_SOUND_OPTIONS } from '../lib/ambientAudio';
+import { AMBIENT_SOUND_OPTIONS, ambientAudio } from '../lib/ambientAudio';
 import { formatClock, formatDurationShort, getDateKey } from '../lib/spacedRepetition';
 import {
   closeFocusRoom,
@@ -53,6 +53,7 @@ interface RoomsViewProps {
   ambientVolume: number;
   onChangeAmbientSound: (sound: AmbientSoundId) => void;
   onChangeAmbientVolume: (vol: number) => void;
+  chimesEnabled?: boolean;
 }
 
 export const RoomsView: React.FC<RoomsViewProps> = ({
@@ -63,6 +64,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   ambientVolume,
   onChangeAmbientSound,
   onChangeAmbientVolume,
+  chimesEnabled = true,
 }) => {
   const [publicRooms, setPublicRooms] = useState<FocusRoom[]>([]);
   const [hostedRooms, setHostedRooms] = useState<FocusRoom[]>([]);
@@ -96,6 +98,7 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [localSessionStartMs, setLocalSessionStartMs] = useState<number>(() => Date.now());
+  const completedRoomTimerKeyRef = useRef<string>('');
 
   const subjectsMap = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
 
@@ -135,9 +138,10 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
 
   useEffect(() => {
     if (!activeRoom || activeRoom.timerStatus !== 'running') return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 500);
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 250);
     return () => window.clearInterval(id);
-  }, [activeRoom]);
+  }, [activeRoom?.id, activeRoom?.timerStatus, activeRoom?.timerStartedAtMs]);
 
   const computeRoomElapsedSeconds = (room: FocusRoom): number => {
     const runningDelta =
@@ -146,6 +150,39 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
         : 0;
     return room.timerAccumulatedSeconds + runningDelta;
   };
+
+  useEffect(() => {
+    if (!activeRoom) return;
+    if (activeRoom.timerMode !== 'timer' || activeRoom.timerStatus !== 'running') return;
+    const runningDelta =
+      activeRoom.timerStartedAtMs > 0
+        ? Math.max(0, Math.floor((nowMs - activeRoom.timerStartedAtMs) / 1000))
+        : 0;
+    const elapsed = activeRoom.timerAccumulatedSeconds + runningDelta;
+    if (elapsed < activeRoom.timerDurationSeconds) return;
+
+    const runKey = `${activeRoom.id}_${activeRoom.timerStartedAtMs}`;
+    if (completedRoomTimerKeyRef.current === runKey) return;
+    completedRoomTimerKeyRef.current = runKey;
+
+    if (chimesEnabled) {
+      ambientAudio.playCompletionChime();
+    }
+    setSessionNotice('Room focus block complete! Click "Log Room Session" to save this block.');
+
+    if (activeRoom.hostId === uid) {
+      void updateRoomTimerAndSound(activeRoom.id, {
+        timerMode: activeRoom.timerMode,
+        timerDurationSeconds: activeRoom.timerDurationSeconds,
+        timerStatus: 'idle',
+        timerStartedAtMs: 0,
+        timerAccumulatedSeconds: 0,
+        ambientSound: activeRoom.ambientSound,
+      }).catch((err) => {
+        setRoomError(err instanceof Error ? err.message : 'Unable to reset room timer.');
+      });
+    }
+  }, [activeRoom, nowMs, uid, chimesEnabled]);
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -228,34 +265,48 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
 
   const handleHostTimerAction = async (action: 'start' | 'pause' | 'reset') => {
     if (!activeRoom || activeRoom.hostId !== uid) return;
-    const elapsed = computeRoomElapsedSeconds(activeRoom);
-    if (action === 'start') {
-      await updateRoomTimerAndSound(activeRoom.id, {
-        timerMode: activeRoom.timerMode,
-        timerDurationSeconds: activeRoom.timerDurationSeconds,
-        timerStatus: 'running',
-        timerStartedAtMs: Date.now(),
-        timerAccumulatedSeconds: activeRoom.timerAccumulatedSeconds,
-        ambientSound: activeRoom.ambientSound,
-      });
-    } else if (action === 'pause') {
-      await updateRoomTimerAndSound(activeRoom.id, {
-        timerMode: activeRoom.timerMode,
-        timerDurationSeconds: activeRoom.timerDurationSeconds,
-        timerStatus: 'paused',
-        timerStartedAtMs: 0,
-        timerAccumulatedSeconds: elapsed,
-        ambientSound: activeRoom.ambientSound,
-      });
-    } else {
-      await updateRoomTimerAndSound(activeRoom.id, {
-        timerMode: activeRoom.timerMode,
-        timerDurationSeconds: activeRoom.timerDurationSeconds,
-        timerStatus: 'idle',
-        timerStartedAtMs: 0,
-        timerAccumulatedSeconds: 0,
-        ambientSound: activeRoom.ambientSound,
-      });
+    setRoomError(null);
+    const now = Date.now();
+    setNowMs(now);
+    const runningDelta =
+      activeRoom.timerStatus === 'running' && activeRoom.timerStartedAtMs > 0
+        ? Math.max(0, Math.floor((now - activeRoom.timerStartedAtMs) / 1000))
+        : 0;
+    const elapsed = activeRoom.timerAccumulatedSeconds + runningDelta;
+
+    try {
+      if (action === 'start') {
+        setSessionNotice(null);
+        await updateRoomTimerAndSound(activeRoom.id, {
+          timerMode: activeRoom.timerMode,
+          timerDurationSeconds: activeRoom.timerDurationSeconds,
+          timerStatus: 'running',
+          timerStartedAtMs: now,
+          timerAccumulatedSeconds: activeRoom.timerAccumulatedSeconds,
+          ambientSound: activeRoom.ambientSound,
+        });
+      } else if (action === 'pause') {
+        await updateRoomTimerAndSound(activeRoom.id, {
+          timerMode: activeRoom.timerMode,
+          timerDurationSeconds: activeRoom.timerDurationSeconds,
+          timerStatus: 'paused',
+          timerStartedAtMs: 0,
+          timerAccumulatedSeconds: elapsed,
+          ambientSound: activeRoom.ambientSound,
+        });
+      } else {
+        setSessionNotice(null);
+        await updateRoomTimerAndSound(activeRoom.id, {
+          timerMode: activeRoom.timerMode,
+          timerDurationSeconds: activeRoom.timerDurationSeconds,
+          timerStatus: 'idle',
+          timerStartedAtMs: 0,
+          timerAccumulatedSeconds: 0,
+          ambientSound: activeRoom.ambientSound,
+        });
+      }
+    } catch (err) {
+      setRoomError(err instanceof Error ? err.message : 'Unable to update room timer.');
     }
   };
 
@@ -265,18 +316,24 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
     nextSound: AmbientSoundId,
   ) => {
     if (!activeRoom || activeRoom.hostId !== uid) return;
-    await updateRoomTimerAndSound(activeRoom.id, {
-      timerMode: nextMode,
-      timerDurationSeconds: Math.max(1, Math.min(240, nextMins)) * 60,
-      timerStatus: 'idle',
-      timerStartedAtMs: 0,
-      timerAccumulatedSeconds: 0,
-      ambientSound: nextSound,
-    });
+    setRoomError(null);
+    try {
+      await updateRoomTimerAndSound(activeRoom.id, {
+        timerMode: nextMode,
+        timerDurationSeconds: Math.max(1, Math.min(240, nextMins)) * 60,
+        timerStatus: 'idle',
+        timerStartedAtMs: 0,
+        timerAccumulatedSeconds: 0,
+        ambientSound: nextSound,
+      });
+    } catch (err) {
+      setRoomError(err instanceof Error ? err.message : 'Unable to update room timer settings.');
+    }
   };
 
   const handleLogRoomSession = async () => {
     if (!activeRoom) return;
+    setRoomError(null);
     const roomElapsed = computeRoomElapsedSeconds(activeRoom);
     const localElapsed = Math.max(0, Math.floor((Date.now() - localSessionStartMs) / 1000));
     const durationToLog = roomElapsed >= 15 ? roomElapsed : localElapsed;
@@ -285,23 +342,27 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
       return;
     }
     const subj = selectedSubjectId ? subjectsMap.get(selectedSubjectId) : undefined;
-    await logFocusSession(uid, {
-      mode: activeRoom.timerMode,
-      contextType: activeRoom.visibility === 'private' ? 'private_room' : 'public_room',
-      roomId: activeRoom.id,
-      roomName: activeRoom.name,
-      subjectId: subj?.id || '',
-      subjectName: subj?.name || 'General Study',
-      subjectColor: subj?.color || '#4B5563',
-      durationSeconds: durationToLog,
-      ambientSound,
-      completedAt: new Date().toISOString(),
-      dateKey: getDateKey(),
-    });
-    setLocalSessionStartMs(Date.now());
-    setSessionNotice(
-      `Saved ${formatDurationShort(durationToLog)} (${activeRoom.visibility} room) to your Progress log.`,
-    );
+    try {
+      await logFocusSession(uid, {
+        mode: activeRoom.timerMode,
+        contextType: activeRoom.visibility === 'private' ? 'private_room' : 'public_room',
+        roomId: activeRoom.id,
+        roomName: activeRoom.name,
+        subjectId: subj?.id || '',
+        subjectName: subj?.name || 'General Study',
+        subjectColor: subj?.color || '#4B5563',
+        durationSeconds: durationToLog,
+        ambientSound,
+        completedAt: new Date().toISOString(),
+        dateKey: getDateKey(),
+      });
+      setLocalSessionStartMs(Date.now());
+      setSessionNotice(
+        `Saved ${formatDurationShort(durationToLog)} (${activeRoom.visibility} room) to your Progress log.`,
+      );
+    } catch (err) {
+      setRoomError(err instanceof Error ? err.message : 'Unable to log room session.');
+    }
   };
 
   const handleLeaveRoom = async () => {
@@ -417,6 +478,12 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
             )}
           </div>
         </div>
+
+        {roomError && (
+          <div className="p-3.5 rounded-2xl border border-red-200 bg-red-50 text-red-800 text-xs">
+            {roomError}
+          </div>
+        )}
 
         {sessionNotice && (
           <div className="px-5 py-3 rounded-2xl bg-[var(--pastel-soft)] border border-[var(--pastel-border)] text-xs font-medium">

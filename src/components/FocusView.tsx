@@ -1,146 +1,87 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Pause, Play, RotateCcw, Volume2 } from 'lucide-react';
-import { AMBIENT_SOUND_OPTIONS, ambientAudio } from '../lib/ambientAudio';
-import { formatClock, formatDurationShort, getDateKey } from '../lib/spacedRepetition';
-import { logFocusSession } from '../lib/studyRepo';
+import { AMBIENT_SOUND_OPTIONS } from '../lib/ambientAudio';
+import { formatClock, formatDurationShort } from '../lib/spacedRepetition';
 import { PastelSelect } from './PastelSelect';
-import type { AmbientSoundId, FocusMode, FocusSession, Subject } from '../types/study';
+import type { AmbientSoundId, FocusSession, Subject } from '../types/study';
+
+export type FocusClockMode = 'timer' | 'stopwatch';
+
+export interface FocusClockState {
+  mode: FocusClockMode;
+  durationMinutes: number;
+  status: 'idle' | 'running' | 'paused';
+  startedAtMs: number;
+  accumulatedSeconds: number;
+  subjectId: string;
+  statusMessage: string | null;
+  saving: boolean;
+}
 
 interface FocusViewProps {
-  uid: string;
   subjects: Subject[];
   sessions: FocusSession[];
   ambientSound: AmbientSoundId;
   ambientVolume: number;
   onChangeAmbientSound: (sound: AmbientSoundId) => void;
   onChangeAmbientVolume: (vol: number) => void;
-  chimesEnabled?: boolean;
+  clock: FocusClockState;
+  displaySeconds: number;
+  elapsedSeconds: number;
+  onToggleRun: () => void;
+  onReset: () => void;
+  onCompleteAndLog: () => Promise<void>;
+  onSwitchMode: (mode: FocusClockMode) => void;
+  onSelectDurationMinutes: (mins: number) => void;
+  onChangeSubjectId: (subjectId: string) => void;
 }
 
 export const FocusView: React.FC<FocusViewProps> = ({
-  uid,
   subjects,
   sessions,
   ambientSound,
   ambientVolume,
   onChangeAmbientSound,
   onChangeAmbientVolume,
-  chimesEnabled = true,
+  clock,
+  displaySeconds,
+  elapsedSeconds,
+  onToggleRun,
+  onReset,
+  onCompleteAndLog,
+  onSwitchMode,
+  onSelectDurationMinutes,
+  onChangeSubjectId,
 }) => {
-  const [mode, setMode] = useState<FocusMode>('timer');
-  const [customMinutes, setCustomMinutes] = useState(25);
-  const [secondsLeft, setSecondsLeft] = useState(25 * 60);
-  const [stopwatchSeconds, setStopwatchSeconds] = useState(0);
-  const [isRunning, setIsRunning] = useState(false);
-  const [selectedSubjectId, setSelectedSubjectId] = useState('');
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const initialTimerDurationRef = useRef(25 * 60);
-  const subjectsMap = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
-
-  const handleSelectPresetMinutes = (mins: number) => {
-    const clamped = Math.max(1, Math.min(240, Math.round(mins) || 25));
-    setCustomMinutes(clamped);
-    if (!isRunning) {
-      setSecondsLeft(clamped * 60);
-      initialTimerDurationRef.current = clamped * 60;
-    }
-  };
-
-  const persistSession = async (durationSeconds: number, sessionMode: FocusMode) => {
-    if (durationSeconds < 5) {
-      setStatusMessage('Focus for at least 5 seconds before logging a session.');
-      return;
-    }
-    setSaving(true);
-    try {
-      const subj = selectedSubjectId ? subjectsMap.get(selectedSubjectId) : undefined;
-      await logFocusSession(uid, {
-        mode: sessionMode,
-        contextType: 'solo',
-        subjectId: subj?.id || '',
-        subjectName: subj?.name || 'General Study',
-        subjectColor: subj?.color || '#4B5563',
-        durationSeconds,
-        ambientSound,
-        completedAt: new Date().toISOString(),
-        dateKey: getDateKey(),
-      });
-      setStatusMessage(`Logged ${formatDurationShort(durationSeconds)} (${subj?.name || 'General Study'}).`);
-    } finally {
-      setSaving(false);
-    }
-  };
+  const [minutesDraft, setMinutesDraft] = useState(String(clock.durationMinutes));
 
   useEffect(() => {
-    if (!isRunning) return;
-    const interval = window.setInterval(() => {
-      if (mode === 'timer') {
-        setSecondsLeft((prev) => {
-          if (prev <= 1) {
-            window.clearInterval(interval);
-            setIsRunning(false);
-            if (chimesEnabled) {
-              ambientAudio.playCompletionChime();
-            }
-            void persistSession(initialTimerDurationRef.current, 'timer');
-            return customMinutes * 60;
-          }
-          return prev - 1;
-        });
-      } else {
-        setStopwatchSeconds((prev) => prev + 1);
-      }
-    }, 1000);
+    setMinutesDraft(String(clock.durationMinutes));
+  }, [clock.durationMinutes]);
 
-    return () => window.clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunning, mode, customMinutes]);
-
-  const handleToggleRun = () => {
-    setStatusMessage(null);
-    if (!isRunning && mode === 'timer' && secondsLeft === customMinutes * 60) {
-      initialTimerDurationRef.current = customMinutes * 60;
-    }
-    setIsRunning((prev) => !prev);
-  };
-
-  const handleReset = () => {
-    setIsRunning(false);
-    setStatusMessage(null);
-    if (mode === 'timer') {
-      setSecondsLeft(customMinutes * 60);
-      initialTimerDurationRef.current = customMinutes * 60;
-    } else {
-      setStopwatchSeconds(0);
+  const handleMinutesDraftChange = (raw: string) => {
+    setMinutesDraft(raw);
+    if (raw.trim() === '') return;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 240) {
+      onSelectDurationMinutes(Math.round(parsed));
     }
   };
 
-  const handleCompleteAndLog = async () => {
-    setIsRunning(false);
-    if (mode === 'timer') {
-      const elapsed = initialTimerDurationRef.current - secondsLeft;
-      await persistSession(elapsed, 'timer');
-      setSecondsLeft(customMinutes * 60);
-      initialTimerDurationRef.current = customMinutes * 60;
-    } else {
-      await persistSession(stopwatchSeconds, 'stopwatch');
-      setStopwatchSeconds(0);
+  const handleMinutesDraftBlur = () => {
+    const parsed = Number(minutesDraft);
+    if (!minutesDraft.trim() || !Number.isFinite(parsed)) {
+      setMinutesDraft(String(clock.durationMinutes));
+      return;
     }
+    const clamped = Math.max(1, Math.min(240, Math.round(parsed)));
+    setMinutesDraft(String(clamped));
+    onSelectDurationMinutes(clamped);
   };
 
-  const switchMode = (next: FocusMode) => {
-    setIsRunning(false);
-    setStatusMessage(null);
-    setMode(next);
-  };
-
-  const activeDisplayClock = mode === 'timer' ? formatClock(secondsLeft) : formatClock(stopwatchSeconds);
-  const canLogNow =
-    mode === 'timer'
-      ? initialTimerDurationRef.current - secondsLeft >= 5
-      : stopwatchSeconds >= 5;
+  const activeDisplayClock = formatClock(displaySeconds);
+  const isRunning = clock.status === 'running';
+  const canLogNow = elapsedSeconds >= 5;
 
   return (
     <div className="space-y-8">
@@ -151,9 +92,9 @@ export const FocusView: React.FC<FocusViewProps> = ({
             <div className="flex items-center gap-1 p-1 bg-[var(--pastel-soft)] rounded-full">
               <button
                 type="button"
-                onClick={() => switchMode('timer')}
+                onClick={() => onSwitchMode('timer')}
                 className={`px-4 py-1.5 text-xs font-bold rounded-full transition-colors whitespace-nowrap cursor-pointer ${
-                  mode === 'timer'
+                  clock.mode === 'timer'
                     ? 'bg-[var(--pastel-surface)] text-[var(--pastel-ink)] shadow-xs'
                     : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)]'
                 }`}
@@ -162,9 +103,9 @@ export const FocusView: React.FC<FocusViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => switchMode('stopwatch')}
+                onClick={() => onSwitchMode('stopwatch')}
                 className={`px-4 py-1.5 text-xs font-bold rounded-full transition-colors whitespace-nowrap cursor-pointer ${
-                  mode === 'stopwatch'
+                  clock.mode === 'stopwatch'
                     ? 'bg-[var(--pastel-surface)] text-[var(--pastel-ink)] shadow-xs'
                     : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)]'
                 }`}
@@ -174,8 +115,8 @@ export const FocusView: React.FC<FocusViewProps> = ({
             </div>
 
             <PastelSelect
-              value={selectedSubjectId}
-              onChange={setSelectedSubjectId}
+              value={clock.subjectId}
+              onChange={onChangeSubjectId}
               ariaLabel="Select study subject"
               variant="pill"
               align="right"
@@ -193,16 +134,16 @@ export const FocusView: React.FC<FocusViewProps> = ({
               {activeDisplayClock}
             </div>
 
-            {mode === 'timer' && (
+            {clock.mode === 'timer' && (
               <div className="flex flex-wrap items-center justify-center gap-2">
                 {[15, 25, 45, 60, 90].map((mins) => (
                   <button
                     key={mins}
                     type="button"
                     disabled={isRunning}
-                    onClick={() => handleSelectPresetMinutes(mins)}
+                    onClick={() => onSelectDurationMinutes(mins)}
                     className={`px-3.5 py-1.5 text-xs font-mono-tabular font-bold rounded-full border transition-colors cursor-pointer disabled:opacity-45 ${
-                      customMinutes === mins
+                      clock.durationMinutes === mins
                         ? 'border-[var(--pastel-accent)] bg-[var(--pastel-soft)]'
                         : 'border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)]'
                     }`}
@@ -216,8 +157,9 @@ export const FocusView: React.FC<FocusViewProps> = ({
                     min={1}
                     max={240}
                     disabled={isRunning}
-                    value={customMinutes}
-                    onChange={(e) => handleSelectPresetMinutes(Number(e.target.value))}
+                    value={minutesDraft}
+                    onChange={(e) => handleMinutesDraftChange(e.target.value)}
+                    onBlur={handleMinutesDraftBlur}
                     aria-label="Custom minutes"
                     className="w-16 px-2.5 py-1.5 text-xs font-mono-tabular rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] text-center focus:outline-none disabled:opacity-45"
                   />
@@ -229,16 +171,18 @@ export const FocusView: React.FC<FocusViewProps> = ({
             <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 type="button"
-                onClick={handleToggleRun}
+                onClick={onToggleRun}
                 className="px-6 py-3 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-sm font-bold hover:opacity-90 transition-opacity flex items-center gap-2 cursor-pointer"
               >
                 {isRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                <span>{isRunning ? 'Pause' : 'Start Focus'}</span>
+                <span>
+                  {isRunning ? 'Pause' : clock.status === 'paused' ? 'Resume Focus' : 'Start Focus'}
+                </span>
               </button>
 
               <button
                 type="button"
-                onClick={handleReset}
+                onClick={onReset}
                 className="px-5 py-3 rounded-full border border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)] text-sm font-bold transition-colors flex items-center gap-2 cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" />
@@ -248,18 +192,18 @@ export const FocusView: React.FC<FocusViewProps> = ({
               {canLogNow && (
                 <button
                   type="button"
-                  disabled={saving}
-                  onClick={() => void handleCompleteAndLog()}
+                  disabled={clock.saving}
+                  onClick={() => void onCompleteAndLog()}
                   className="px-5 py-3 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-soft)] hover:bg-[var(--pastel-soft-hover)] text-sm font-bold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>{saving ? 'Logging...' : 'Finish & Log'}</span>
+                  <span>{clock.saving ? 'Logging...' : 'Finish & Log'}</span>
                 </button>
               )}
             </div>
 
-            {statusMessage && (
-              <p className="text-xs text-[var(--pastel-muted)]">{statusMessage}</p>
+            {clock.statusMessage && (
+              <p className="text-xs text-[var(--pastel-muted)]">{clock.statusMessage}</p>
             )}
           </div>
         </section>

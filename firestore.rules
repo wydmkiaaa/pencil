@@ -674,7 +674,7 @@ service cloud.firestore {
     // --- Discoverable Study Profiles (Zero PII; Private Profiles Require Request Approval) ---
     match /publicProfiles/{userId} {
       allow get: if isSignedIn() && isValidId(userId);
-      allow list: if isSignedIn() && existing().uid is string && existing().handle is string;
+      allow list: if isSignedIn();
       allow create: if isOwner(userId) && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().createdAt == request.time

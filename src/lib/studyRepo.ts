@@ -109,19 +109,46 @@ export async function ensureUserProfile(
         });
       }
 
+      const expectedDisplayName =
+        (existing.displayName || 'Scholar').trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Scholar';
+      const expectedAvatarUrl = (existing.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX);
+      const expectedBio = (existing.bio || '').trim().slice(0, BLUEPRINT_LIMITS.BIO_MAX);
+      const expectedTheme = existing.pastelTheme || 'stone';
+      const expectedIsPublic = Boolean(existing.isPublic);
+
       const pubSnap = await getDoc(pubRef);
       if (!pubSnap.exists()) {
         await setDoc(pubRef, {
           uid,
           handle: resolvedHandle,
-          displayName: (existing.displayName || 'Scholar').slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
-          avatarUrl: (existing.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
-          bio: (existing.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
-          pastelTheme: existing.pastelTheme || 'stone',
-          isPublic: Boolean(existing.isPublic),
+          displayName: expectedDisplayName,
+          avatarUrl: expectedAvatarUrl,
+          bio: expectedBio,
+          pastelTheme: expectedTheme,
+          isPublic: expectedIsPublic,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+      } else {
+        const pubData = pubSnap.data() as Partial<PublicProfile>;
+        const needsSync =
+          pubData.handle !== resolvedHandle ||
+          pubData.displayName !== expectedDisplayName ||
+          (pubData.avatarUrl || '') !== expectedAvatarUrl ||
+          (pubData.bio || '') !== expectedBio ||
+          (pubData.pastelTheme || 'stone') !== expectedTheme ||
+          Boolean(pubData.isPublic) !== expectedIsPublic;
+        if (needsSync) {
+          await updateDoc(pubRef, {
+            handle: resolvedHandle,
+            displayName: expectedDisplayName,
+            avatarUrl: expectedAvatarUrl,
+            bio: expectedBio,
+            pastelTheme: expectedTheme,
+            isPublic: expectedIsPublic,
+            updatedAt: serverTimestamp(),
+          });
+        }
       }
       return existing.handle ? existing : { ...existing, handle: resolvedHandle };
     }

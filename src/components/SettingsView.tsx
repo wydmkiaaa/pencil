@@ -180,6 +180,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       .slice(0, 16);
   }, [publicProfiles, uid, friendUidSet, friendSearch]);
 
+  const matchedExistingFriend = useMemo(() => {
+    const q = friendSearch.trim().toLowerCase().replace(/^@/, '');
+    if (!q) return false;
+    return friends.some(
+      (f) =>
+        f.displayName.toLowerCase().includes(q) ||
+        f.handle.toLowerCase().includes(q),
+    );
+  }, [friendSearch, friends]);
+
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileLoaded) return;
@@ -658,7 +668,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {discoverableScholars.length === 0 ? (
                 <p className="py-6 text-center text-xs text-[var(--pastel-muted)]">
                   {friendSearch.trim()
-                    ? 'No matching study profiles found.'
+                    ? matchedExistingFriend
+                      ? 'That learner is already in your Study Circle.'
+                      : 'No matching study profiles found.'
                     : 'No other study profiles available right now.'}
                 </p>
               ) : (

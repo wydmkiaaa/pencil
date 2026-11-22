@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { AuthGate } from './components/AuthGate';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { FocusView } from './components/FocusView';
+import { FocusView, type FocusClockMode, type FocusClockState } from './components/FocusView';
 import { HomeView } from './components/HomeView';
 import { ProgressView } from './components/ProgressView';
 import { ReviewView } from './components/ReviewView';
@@ -23,9 +23,11 @@ import { SettingsView } from './components/SettingsView';
 import { SyllabusView } from './components/SyllabusView';
 import { ambientAudio } from './lib/ambientAudio';
 import { auth } from './lib/firebase';
+import { formatClock, formatDurationShort, getDateKey } from './lib/spacedRepetition';
 import {
   addFriend,
   ensureUserProfile,
+  logFocusSession,
   subscribeBlurtSessions,
   subscribeChapterPhotos,
   subscribeChapters,
@@ -108,8 +110,21 @@ function AppWorkspace() {
   const [ambientSound, setAmbientSound] = useState<AmbientSoundId>('none');
   const [ambientVolume, setAmbientVolume] = useState(0.35);
 
+  const [focusClock, setFocusClock] = useState<FocusClockState>({
+    mode: 'timer',
+    durationMinutes: 25,
+    status: 'idle',
+    startedAtMs: 0,
+    accumulatedSeconds: 0,
+    subjectId: '',
+    statusMessage: null,
+    saving: false,
+  });
+  const [focusNowMs, setFocusNowMs] = useState(() => Date.now());
+
   const alertedRemindersRef = useRef<Set<string>>(new Set());
   const syncedAcceptedReqRef = useRef<Set<string>>(new Set());
+  const completedFocusRunRef = useRef<number>(0);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -137,6 +152,16 @@ function AppWorkspace() {
       setIncomingRequests([]);
       setOutgoingRequests([]);
       setActiveInAppBanner(null);
+      setFocusClock({
+        mode: 'timer',
+        durationMinutes: 25,
+        status: 'idle',
+        startedAtMs: 0,
+        accumulatedSeconds: 0,
+        subjectId: '',
+        statusMessage: null,
+        saving: false,
+      });
       ambientAudio.stop();
       return;
     }
@@ -243,6 +268,216 @@ function AppWorkspace() {
   };
 
   const notifSettings = profile?.notificationSettings || DEFAULT_NOTIFICATION_SETTINGS;
+
+  useEffect(() => {
+    if (focusClock.status !== 'running') return;
+    setFocusNowMs(Date.now());
+    const id = window.setInterval(() => setFocusNowMs(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [focusClock.status]);
+
+  const focusElapsedSeconds = useMemo(() => {
+    const runningDelta =
+      focusClock.status === 'running' && focusClock.startedAtMs > 0
+        ? Math.max(0, Math.floor((focusNowMs - focusClock.startedAtMs) / 1000))
+        : 0;
+    return focusClock.accumulatedSeconds + runningDelta;
+  }, [focusClock.status, focusClock.startedAtMs, focusClock.accumulatedSeconds, focusNowMs]);
+
+  const focusDisplaySeconds =
+    focusClock.mode === 'timer'
+      ? Math.max(0, focusClock.durationMinutes * 60 - focusElapsedSeconds)
+      : focusElapsedSeconds;
+
+  useEffect(() => {
+    if (focusClock.mode !== 'timer' || focusClock.status !== 'running') return;
+    const targetSeconds = focusClock.durationMinutes * 60;
+    if (focusElapsedSeconds < targetSeconds) return;
+    if (completedFocusRunRef.current === focusClock.startedAtMs) return;
+    completedFocusRunRef.current = focusClock.startedAtMs;
+
+    if (notifSettings.sessionChimes) {
+      ambientAudio.playCompletionChime();
+    }
+
+    const subj = focusClock.subjectId
+      ? subjects.find((s) => s.id === focusClock.subjectId)
+      : undefined;
+
+    setFocusClock((prev) => ({
+      ...prev,
+      status: 'idle',
+      startedAtMs: 0,
+      accumulatedSeconds: 0,
+      saving: Boolean(user),
+      statusMessage: null,
+    }));
+
+    if (user) {
+      void logFocusSession(user.uid, {
+        mode: 'timer',
+        contextType: 'solo',
+        subjectId: subj?.id || '',
+        subjectName: subj?.name || 'General Study',
+        subjectColor: subj?.color || '#4B5563',
+        durationSeconds: targetSeconds,
+        ambientSound,
+        completedAt: new Date().toISOString(),
+        dateKey: getDateKey(),
+      })
+        .then(() => {
+          setFocusClock((prev) => ({
+            ...prev,
+            saving: false,
+            statusMessage: `Logged ${formatDurationShort(targetSeconds)} (${subj?.name || 'General Study'}).`,
+          }));
+        })
+        .catch((err) => {
+          setFocusClock((prev) => ({
+            ...prev,
+            saving: false,
+            statusMessage:
+              err instanceof Error
+                ? err.message
+                : 'Timer completed, but could not save session log.',
+          }));
+        });
+    }
+  }, [
+    focusClock.mode,
+    focusClock.status,
+    focusClock.durationMinutes,
+    focusClock.startedAtMs,
+    focusClock.subjectId,
+    focusElapsedSeconds,
+    notifSettings.sessionChimes,
+    subjects,
+    user,
+    ambientSound,
+  ]);
+
+  const handleToggleFocusRun = () => {
+    const now = Date.now();
+    setFocusNowMs(now);
+    setFocusClock((prev) => {
+      if (prev.status === 'running') {
+        const elapsed =
+          prev.accumulatedSeconds +
+          (prev.startedAtMs > 0 ? Math.max(0, Math.floor((now - prev.startedAtMs) / 1000)) : 0);
+        return {
+          ...prev,
+          status: 'paused',
+          startedAtMs: 0,
+          accumulatedSeconds: elapsed,
+          statusMessage: null,
+        };
+      }
+      return {
+        ...prev,
+        status: 'running',
+        startedAtMs: now,
+        statusMessage: null,
+      };
+    });
+  };
+
+  const handleResetFocus = () => {
+    setFocusClock((prev) => ({
+      ...prev,
+      status: 'idle',
+      startedAtMs: 0,
+      accumulatedSeconds: 0,
+      statusMessage: null,
+    }));
+  };
+
+  const handleSwitchFocusMode = (nextMode: FocusClockMode) => {
+    setFocusClock((prev) => ({
+      ...prev,
+      mode: nextMode,
+      status: 'idle',
+      startedAtMs: 0,
+      accumulatedSeconds: 0,
+      statusMessage: null,
+    }));
+  };
+
+  const handleSelectFocusDurationMinutes = (mins: number) => {
+    const clamped = Math.max(1, Math.min(240, Math.round(mins)));
+    setFocusClock((prev) => {
+      if (prev.status === 'running') return prev;
+      return {
+        ...prev,
+        durationMinutes: clamped,
+        status: 'idle',
+        startedAtMs: 0,
+        accumulatedSeconds: 0,
+        statusMessage: null,
+      };
+    });
+  };
+
+  const handleChangeFocusSubjectId = (subjectId: string) => {
+    setFocusClock((prev) => ({ ...prev, subjectId }));
+  };
+
+  const handleCompleteAndLogFocus = async () => {
+    if (!user) return;
+    const now = Date.now();
+    const elapsed =
+      focusClock.accumulatedSeconds +
+      (focusClock.status === 'running' && focusClock.startedAtMs > 0
+        ? Math.max(0, Math.floor((now - focusClock.startedAtMs) / 1000))
+        : 0);
+    const modeToLog = focusClock.mode;
+
+    setFocusClock((prev) => ({
+      ...prev,
+      status: 'idle',
+      startedAtMs: 0,
+      accumulatedSeconds: 0,
+      statusMessage: null,
+    }));
+
+    if (elapsed < 5) {
+      setFocusClock((prev) => ({
+        ...prev,
+        statusMessage: 'Focus for at least 5 seconds before logging a session.',
+      }));
+      return;
+    }
+
+    const subj = focusClock.subjectId
+      ? subjects.find((s) => s.id === focusClock.subjectId)
+      : undefined;
+
+    setFocusClock((prev) => ({ ...prev, saving: true }));
+    try {
+      await logFocusSession(user.uid, {
+        mode: modeToLog,
+        contextType: 'solo',
+        subjectId: subj?.id || '',
+        subjectName: subj?.name || 'General Study',
+        subjectColor: subj?.color || '#4B5563',
+        durationSeconds: elapsed,
+        ambientSound,
+        completedAt: new Date().toISOString(),
+        dateKey: getDateKey(),
+      });
+      setFocusClock((prev) => ({
+        ...prev,
+        saving: false,
+        statusMessage: `Logged ${formatDurationShort(elapsed)} (${subj?.name || 'General Study'}).`,
+      }));
+    } catch (err) {
+      setFocusClock((prev) => ({
+        ...prev,
+        saving: false,
+        statusMessage:
+          err instanceof Error ? err.message : 'Unable to log focus session right now.',
+      }));
+    }
+  };
 
   // In-app Notifications: upcoming deadlines, triggered reminders, and due flashcards
   const notifications = useMemo<NotificationItem[]>(() => {
@@ -386,6 +621,17 @@ function AppWorkspace() {
           {/* Zone 2: Quiet Workspace Context */}
           <div className="hidden md:flex items-center gap-4 text-xs text-[var(--pastel-muted)] whitespace-nowrap shrink-0">
             <span className="capitalize font-bold">{activeTab}</span>
+            {focusClock.status === 'running' && activeTab !== 'focus' && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('focus')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[var(--pastel-surface)] border border-[var(--pastel-border)] text-[var(--pastel-ink)] hover:opacity-80 cursor-pointer font-mono-tabular font-bold"
+                title="Return to running focus timer"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>{formatClock(focusDisplaySeconds)}</span>
+              </button>
+            )}
             {ambientSound !== 'none' && (
               <button
                 type="button"
@@ -533,14 +779,21 @@ function AppWorkspace() {
 
         {activeTab === 'focus' && (
           <FocusView
-            uid={user.uid}
             subjects={subjects}
             sessions={sessions}
             ambientSound={ambientSound}
             ambientVolume={ambientVolume}
             onChangeAmbientSound={handleChangeAmbientSound}
             onChangeAmbientVolume={handleChangeAmbientVolume}
-            chimesEnabled={notifSettings.sessionChimes}
+            clock={focusClock}
+            displaySeconds={focusDisplaySeconds}
+            elapsedSeconds={focusElapsedSeconds}
+            onToggleRun={handleToggleFocusRun}
+            onReset={handleResetFocus}
+            onCompleteAndLog={handleCompleteAndLogFocus}
+            onSwitchMode={handleSwitchFocusMode}
+            onSelectDurationMinutes={handleSelectFocusDurationMinutes}
+            onChangeSubjectId={handleChangeFocusSubjectId}
           />
         )}
 
@@ -553,6 +806,7 @@ function AppWorkspace() {
             ambientVolume={ambientVolume}
             onChangeAmbientSound={handleChangeAmbientSound}
             onChangeAmbientVolume={handleChangeAmbientVolume}
+            chimesEnabled={notifSettings.sessionChimes}
           />
         )}
 
