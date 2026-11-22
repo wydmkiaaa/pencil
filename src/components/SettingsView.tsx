@@ -14,7 +14,6 @@ import {
   Trash2,
   Upload,
   User,
-  UserCheck,
   UserPlus,
   Users,
   X,
@@ -41,6 +40,7 @@ import {
   type PublicProfile,
   type UserProfile,
 } from '../types/study';
+import { FriendRequestsView } from './FriendRequestsView';
 
 interface SettingsViewProps {
   uid: string;
@@ -157,10 +157,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return map;
   }, [outgoingRequests]);
 
-  const pendingIncomingRequests = useMemo(
-    () => incomingRequests.filter((r) => r.status === 'pending'),
-    [incomingRequests],
-  );
+  const incomingBySenderUid = useMemo(() => {
+    const map = new Map<string, FriendRequest>();
+    incomingRequests.forEach((req) => {
+      map.set(req.fromUid, req);
+    });
+    return map;
+  }, [incomingRequests]);
 
   const discoverableScholars = useMemo(() => {
     const q = friendSearch.trim().toLowerCase().replace(/^@/, '');
@@ -622,75 +625,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {/* Incoming Friend Requests */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-bold text-[var(--pastel-muted)]">
-              <UserCheck className="w-3.5 h-3.5" />
-              <span>Incoming Friend Requests ({pendingIncomingRequests.length})</span>
-            </div>
-            {!isPublic && (
-              <span className="text-[11px] text-[var(--pastel-muted)]">
-                Private account approval queue
-              </span>
-            )}
-          </div>
-
-          <div className="divide-y divide-[var(--pastel-border)] border border-[var(--pastel-border)] rounded-2xl px-4">
-            {pendingIncomingRequests.length === 0 ? (
-              <p className="py-4 text-center text-xs text-[var(--pastel-muted)]">
-                No pending friend requests right now.
-              </p>
-            ) : (
-              pendingIncomingRequests.map((req) => (
-                <div key={req.id} className="py-3 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    {req.fromAvatarUrl ? (
-                      <img
-                        src={req.fromAvatarUrl}
-                        alt={req.fromDisplayName}
-                        referrerPolicy="no-referrer"
-                        className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
-                      />
-                    ) : (
-                      <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
-                        {getInitials(req.fromDisplayName)}
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold truncate">{req.fromDisplayName}</div>
-                      <div className="text-xs text-[var(--pastel-muted)] truncate">
-                        @{req.fromHandle}
-                        {req.fromBio ? ` · ${req.fromBio}` : ''}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      disabled={busyRequestId === req.id}
-                      onClick={() => void handleRespondRequest(req, 'accepted')}
-                      className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer disabled:opacity-50"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>{busyRequestId === req.id ? 'Saving...' : 'Accept'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyRequestId === req.id}
-                      onClick={() => void handleRespondRequest(req, 'declined')}
-                      className="px-3.5 py-1.5 rounded-full border border-[var(--pastel-border)] text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] hover:bg-[var(--pastel-soft)] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                      <span>Decline</span>
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        <FriendRequestsView
+          uid={uid}
+          friends={friends}
+          publicProfiles={publicProfiles}
+          incomingRequests={incomingRequests}
+          outgoingRequests={outgoingRequests}
+          isProfilePublic={isPublic}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Search & Add / Request Scholars */}
@@ -722,7 +664,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               ) : (
                 discoverableScholars.map((person) => {
                   const outgoingReq = outgoingByTargetUid.get(person.uid);
-                  const isBusy = busyFriendUid === person.uid;
+                  const incomingReq = incomingBySenderUid.get(person.uid);
+                  const hasApprovedRequest =
+                    outgoingReq?.status === 'accepted' || incomingReq?.status === 'accepted';
+                  const isBusy =
+                    busyFriendUid === person.uid ||
+                    (incomingReq ? busyRequestId === incomingReq.id : false);
 
                   return (
                     <div key={person.uid} className="py-3 flex items-center justify-between gap-3">
@@ -757,20 +704,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </div>
                       </div>
 
-                      {person.isPublic || outgoingReq?.status === 'accepted' ? (
+                      {person.isPublic || hasApprovedRequest ? (
                         <button
                           type="button"
                           disabled={isBusy}
                           onClick={() => void handleAddFriend(person)}
-                          className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer shrink-0 disabled:opacity-50"
+                          className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
                         >
-                          <UserPlus className="w-3.5 h-3.5" />
+                          <UserPlus className="w-3.5 h-3.5 shrink-0" />
                           <span>{isBusy ? 'Adding...' : 'Add'}</span>
                         </button>
+                      ) : incomingReq?.status === 'pending' ? (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleRespondRequest(incomingReq, 'accepted')}
+                            className="px-3 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1 hover:opacity-90 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                          >
+                            <Check className="w-3 h-3 shrink-0" />
+                            <span>Accept</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleRespondRequest(incomingReq, 'declined')}
+                            aria-label={`Decline request from ${person.displayName}`}
+                            className="p-1.5 rounded-full border border-[var(--pastel-border)] text-[var(--pastel-muted)] hover:text-red-600 hover:bg-[var(--pastel-soft)] cursor-pointer disabled:opacity-50"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       ) : outgoingReq?.status === 'pending' ? (
                         <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="px-3 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-soft)] text-[var(--pastel-muted)] text-xs font-bold inline-flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
+                          <span className="px-3 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-soft)] text-[var(--pastel-muted)] text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap">
+                            <Clock className="w-3 h-3 shrink-0" />
                             <span>Requested</span>
                           </span>
                           <button
@@ -789,9 +757,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           type="button"
                           disabled={isBusy}
                           onClick={() => void handleSendRequest(person)}
-                          className="px-3.5 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shrink-0 disabled:opacity-50"
+                          className="px-3.5 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
                         >
-                          <UserPlus className="w-3.5 h-3.5" />
+                          <UserPlus className="w-3.5 h-3.5 shrink-0" />
                           <span>
                             {isBusy
                               ? 'Sending...'

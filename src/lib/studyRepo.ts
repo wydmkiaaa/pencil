@@ -337,16 +337,53 @@ export function subscribeFriends(uid: string, onData: (friends: FriendLink[]) =>
   );
 }
 
+export async function hasApprovedFriendRequest(uid: string, targetUid: string): Promise<boolean> {
+  const [outgoingSnap, incomingSnap] = await Promise.all([
+    getDoc(doc(db, 'friendRequests', `${uid}__${targetUid}`)),
+    getDoc(doc(db, 'friendRequests', `${targetUid}__${uid}`)),
+  ]);
+  const outgoingApproved =
+    outgoingSnap.exists() && (outgoingSnap.data() as Omit<FriendRequest, 'id'>).status === 'accepted';
+  const incomingApproved =
+    incomingSnap.exists() && (incomingSnap.data() as Omit<FriendRequest, 'id'>).status === 'accepted';
+  return outgoingApproved || incomingApproved;
+}
+
 export async function addFriend(uid: string, target: PublicProfile): Promise<void> {
   if (target.uid === uid) return;
   const path = `users/${uid}/friends/${target.uid}`;
   const friendRef = doc(db, 'users', uid, 'friends', target.uid);
+
+  let resolvedTarget = target;
+  try {
+    const pubSnap = await getDoc(doc(db, 'publicProfiles', target.uid));
+    if (!pubSnap.exists()) {
+      throw new Error('Study profile not found.');
+    }
+    resolvedTarget = { ...(pubSnap.data() as PublicProfile), uid: pubSnap.id };
+    if (!resolvedTarget.isPublic) {
+      const approved = await hasApprovedFriendRequest(uid, target.uid);
+      if (!approved) {
+        throw new Error('Friend request must be approved before adding this learner to your friends list.');
+      }
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('Friend request must be approved') || error.message === 'Study profile not found.')
+    ) {
+      throw error;
+    }
+    handleFirestoreError(error, OperationType.GET, `publicProfiles/${target.uid}`);
+  }
+
   const payload = {
-    handle: normalizeHandle(target.handle, target.uid),
-    displayName: target.displayName.slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
-    avatarUrl: (target.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
-    bio: (target.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
+    handle: normalizeHandle(resolvedTarget.handle || target.handle, target.uid),
+    displayName: (resolvedTarget.displayName || target.displayName).slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
+    avatarUrl: (resolvedTarget.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
+    bio: (resolvedTarget.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
   };
+
   try {
     const existingSnap = await getDoc(friendRef);
     if (existingSnap.exists()) {
@@ -436,14 +473,16 @@ export async function sendFriendRequest(fromProfile: UserProfile, target: Public
   const path = `friendRequests/${requestId}`;
   const reqRef = doc(db, 'friendRequests', requestId);
   try {
+    const alreadyApproved = await hasApprovedFriendRequest(fromProfile.uid, target.uid);
+    if (alreadyApproved) {
+      await addFriend(fromProfile.uid, target);
+      return;
+    }
+
     const existingSnap = await getDoc(reqRef);
     if (existingSnap.exists()) {
       const existingData = existingSnap.data() as Omit<FriendRequest, 'id'>;
       if (existingData.status === 'pending') {
-        return;
-      }
-      if (existingData.status === 'accepted') {
-        await addFriend(fromProfile.uid, target);
         return;
       }
       if (existingData.status === 'declined') {

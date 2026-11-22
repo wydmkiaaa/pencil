@@ -387,6 +387,10 @@ service cloud.firestore {
               exists(/databases/$(database)/documents/friendRequests/$(userId + '__' + friendId))
               && get(/databases/$(database)/documents/friendRequests/$(userId + '__' + friendId)).data.status == 'accepted'
             )
+            || (
+              exists(/databases/$(database)/documents/friendRequests/$(friendId + '__' + userId))
+              && get(/databases/$(database)/documents/friendRequests/$(friendId + '__' + userId)).data.status == 'accepted'
+            )
           );
         allow update: if isOwner(userId) && isValidId(friendId)
           && isValidFriendLink(incoming())

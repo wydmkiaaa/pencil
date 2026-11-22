@@ -302,8 +302,19 @@ function AppWorkspace() {
       }
     }
 
+    const pendingRequests = incomingRequests.filter((r) => r.status === 'pending');
+    if (pendingRequests.length > 0) {
+      items.push({
+        id: 'pending_friend_requests',
+        title: `${pendingRequests.length} friend ${pendingRequests.length === 1 ? 'request' : 'requests'} awaiting approval`,
+        detail: `From ${pendingRequests.slice(0, 2).map((r) => `@${r.fromHandle}`).join(', ')}${pendingRequests.length > 2 ? ` +${pendingRequests.length - 2} more` : ''}`,
+        urgency: 'info',
+        targetTab: 'settings',
+      });
+    }
+
     return items;
-  }, [tasks, flashcards, notifSettings.taskReminders, notifSettings.dueFlashcards]);
+  }, [tasks, flashcards, incomingRequests, notifSettings.taskReminders, notifSettings.dueFlashcards]);
 
   // In-app reminder banner & optional soft chime check every 30s (no desktop alerts)
   useEffect(() => {
