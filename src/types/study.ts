@@ -132,6 +132,25 @@ export interface FriendLink {
   createdAt?: unknown;
 }
 
+export type FriendRequestStatus = 'pending' | 'accepted' | 'declined';
+
+export interface FriendRequest {
+  id: string;
+  fromUid: string;
+  toUid: string;
+  fromHandle: string;
+  fromDisplayName: string;
+  fromAvatarUrl?: string;
+  fromBio?: string;
+  toHandle: string;
+  toDisplayName: string;
+  toAvatarUrl?: string;
+  toBio?: string;
+  status: FriendRequestStatus;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 export interface StudyTask {
   id: string;
   ownerId: string;

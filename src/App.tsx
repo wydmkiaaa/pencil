@@ -24,6 +24,7 @@ import { SyllabusView } from './components/SyllabusView';
 import { ambientAudio } from './lib/ambientAudio';
 import { auth } from './lib/firebase';
 import {
+  addFriend,
   ensureUserProfile,
   subscribeBlurtSessions,
   subscribeChapterPhotos,
@@ -32,6 +33,8 @@ import {
   subscribeFlashcards,
   subscribeFocusSessions,
   subscribeFriends,
+  subscribeIncomingFriendRequests,
+  subscribeOutgoingFriendRequests,
   subscribePublicProfiles,
   subscribeSubjects,
   subscribeTasks,
@@ -48,6 +51,7 @@ import {
   type Flashcard,
   type FocusSession,
   type FriendLink,
+  type FriendRequest,
   type NavTabId,
   type PublicProfile,
   type StudyTask,
@@ -90,7 +94,10 @@ function AppWorkspace() {
   const [blurtSessions, setBlurtSessions] = useState<BlurtSession[]>([]);
   const [sessions, setSessions] = useState<FocusSession[]>([]);
   const [friends, setFriends] = useState<FriendLink[]>([]);
+  const [friendsLoaded, setFriendsLoaded] = useState(false);
   const [publicProfiles, setPublicProfiles] = useState<PublicProfile[]>([]);
+  const [incomingRequests, setIncomingRequests] = useState<FriendRequest[]>([]);
+  const [outgoingRequests, setOutgoingRequests] = useState<FriendRequest[]>([]);
 
   const [activeTab, setActiveTab] = useState<NavTabId>('home');
   const [notifOpen, setNotifOpen] = useState(false);
@@ -102,6 +109,7 @@ function AppWorkspace() {
   const [ambientVolume, setAmbientVolume] = useState(0.35);
 
   const alertedRemindersRef = useRef<Set<string>>(new Set());
+  const syncedAcceptedReqRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -112,6 +120,7 @@ function AppWorkspace() {
   }, []);
 
   useEffect(() => {
+    syncedAcceptedReqRef.current.clear();
     if (!user) {
       setProfile(null);
       setTasks([]);
@@ -123,7 +132,10 @@ function AppWorkspace() {
       setBlurtSessions([]);
       setSessions([]);
       setFriends([]);
+      setFriendsLoaded(false);
       setPublicProfiles([]);
+      setIncomingRequests([]);
+      setOutgoingRequests([]);
       setActiveInAppBanner(null);
       ambientAudio.stop();
       return;
@@ -167,10 +179,19 @@ function AppWorkspace() {
         if (!cancelled) setSessions(items);
       }),
       subscribeFriends(user.uid, (items) => {
-        if (!cancelled) setFriends(items);
+        if (!cancelled) {
+          setFriends(items);
+          setFriendsLoaded(true);
+        }
       }),
       subscribePublicProfiles((items) => {
         if (!cancelled) setPublicProfiles(items);
+      }),
+      subscribeIncomingFriendRequests(user.uid, (items) => {
+        if (!cancelled) setIncomingRequests(items);
+      }),
+      subscribeOutgoingFriendRequests(user.uid, (items) => {
+        if (!cancelled) setOutgoingRequests(items);
       }),
     ];
 
@@ -179,6 +200,32 @@ function AppWorkspace() {
       unsubs.forEach((u) => u());
     };
   }, [user]);
+
+  useEffect(() => {
+    if (!user || !friendsLoaded) return;
+    const friendUids = new Set(friends.map((f) => f.friendUid));
+    const publicMap = new Map(publicProfiles.map((p) => [p.uid, p]));
+
+    outgoingRequests.forEach((req) => {
+      if (req.status !== 'accepted') return;
+      if (friendUids.has(req.toUid) || syncedAcceptedReqRef.current.has(req.id)) return;
+      syncedAcceptedReqRef.current.add(req.id);
+      const latestTarget = publicMap.get(req.toUid);
+      const targetProfile: PublicProfile = latestTarget || {
+        uid: req.toUid,
+        handle: req.toHandle,
+        displayName: req.toDisplayName,
+        avatarUrl: req.toAvatarUrl,
+        bio: req.toBio,
+        pastelTheme: 'stone',
+        isPublic: false,
+      };
+      void addFriend(user.uid, targetProfile).catch((err) => {
+        syncedAcceptedReqRef.current.delete(req.id);
+        console.error('Failed to add accepted friend:', err);
+      });
+    });
+  }, [user, friendsLoaded, outgoingRequests, friends, publicProfiles]);
 
   useEffect(() => {
     const theme = profile?.pastelTheme || 'stone';
@@ -528,8 +575,11 @@ function AppWorkspace() {
           <SettingsView
             uid={user.uid}
             profile={effectiveProfile}
+            profileLoaded={profile !== null}
             friends={friends}
             publicProfiles={publicProfiles}
+            incomingRequests={incomingRequests}
+            outgoingRequests={outgoingRequests}
           />
         )}
       </main>
@@ -543,23 +593,32 @@ function AppWorkspace() {
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
+            const pendingRequestsCount =
+              item.id === 'settings'
+                ? incomingRequests.filter((r) => r.status === 'pending').length
+                : 0;
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`flex-1 lg:flex-initial min-w-[54px] sm:min-w-[72px] lg:min-w-0 py-2 px-2 sm:px-3 lg:px-4.5 lg:py-2 rounded-2xl lg:rounded-full flex flex-col lg:flex-row items-center justify-center gap-1.5 lg:gap-2.5 transition-colors font-bold whitespace-nowrap shrink-0 cursor-pointer ${
+                className={`relative flex-1 lg:flex-initial min-w-[54px] sm:min-w-[72px] lg:min-w-0 py-2 px-2 sm:px-3 lg:px-4.5 lg:py-2 rounded-2xl lg:rounded-full flex flex-col lg:flex-row items-center justify-center gap-1.5 lg:gap-2.5 transition-colors font-bold whitespace-nowrap shrink-0 cursor-pointer ${
                   active
                     ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] shadow-xs'
                     : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] hover:bg-[var(--pastel-soft)]'
                 }`}
               >
                 <span
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
+                  className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
                     active ? 'bg-white/15' : 'bg-[var(--pastel-soft)]/85'
                   }`}
                 >
                   <Icon className="w-4 h-4 shrink-0" strokeWidth={2.25} />
+                  {pendingRequestsCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border border-[var(--pastel-surface)] text-[9px] font-mono-tabular flex items-center justify-center">
+                      {pendingRequestsCount}
+                    </span>
+                  )}
                 </span>
                 <span className="text-[11px] lg:text-xs leading-none">{item.label}</span>
               </button>

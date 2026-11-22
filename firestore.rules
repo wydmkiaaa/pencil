@@ -99,6 +99,26 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidFriendRequest(data) {
+      return data.keys().hasAll(['fromUid', 'toUid', 'fromHandle', 'fromDisplayName', 'toHandle', 'toDisplayName', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['fromUid', 'toUid', 'fromHandle', 'fromDisplayName', 'fromAvatarUrl', 'fromBio', 'toHandle', 'toDisplayName', 'toAvatarUrl', 'toBio', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.fromUid)
+        && isValidId(data.toUid)
+        && data.fromUid != data.toUid
+        && (data.fromUid == request.auth.uid || data.toUid == request.auth.uid)
+        && data.fromHandle is string && data.fromHandle.size() >= 3 && data.fromHandle.size() <= 32 && data.fromHandle.matches('^[a-z0-9_\\-]+$')
+        && data.fromDisplayName is string && data.fromDisplayName.size() >= 1 && data.fromDisplayName.size() <= 80
+        && (!('fromAvatarUrl' in data) || (data.fromAvatarUrl is string && data.fromAvatarUrl.size() <= 100000))
+        && (!('fromBio' in data) || (data.fromBio is string && data.fromBio.size() <= 300))
+        && data.toHandle is string && data.toHandle.size() >= 3 && data.toHandle.size() <= 32 && data.toHandle.matches('^[a-z0-9_\\-]+$')
+        && data.toDisplayName is string && data.toDisplayName.size() >= 1 && data.toDisplayName.size() <= 80
+        && (!('toAvatarUrl' in data) || (data.toAvatarUrl is string && data.toAvatarUrl.size() <= 100000))
+        && (!('toBio' in data) || (data.toBio is string && data.toBio.size() <= 300))
+        && data.status in ['pending', 'accepted', 'declined']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidStudyTask(data) {
       return data.keys().hasAll(['ownerId', 'title', 'priority', 'status', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['ownerId', 'title', 'notes', 'priority', 'hardness', 'status', 'subjectId', 'dueAt', 'reminderAt', 'createdAt', 'updatedAt'])
@@ -361,7 +381,13 @@ service cloud.firestore {
           && incoming().friendUid == friendId
           && incoming().createdAt == request.time
           && exists(/databases/$(database)/documents/publicProfiles/$(friendId))
-          && get(/databases/$(database)/documents/publicProfiles/$(friendId)).data.isPublic == true;
+          && (
+            get(/databases/$(database)/documents/publicProfiles/$(friendId)).data.isPublic == true
+            || (
+              exists(/databases/$(database)/documents/friendRequests/$(userId + '__' + friendId))
+              && get(/databases/$(database)/documents/friendRequests/$(userId + '__' + friendId)).data.status == 'accepted'
+            )
+          );
         allow update: if isOwner(userId) && isValidId(friendId)
           && isValidFriendLink(incoming())
           && incoming().ownerId == existing().ownerId
@@ -641,16 +667,10 @@ service cloud.firestore {
       }
     }
 
-    // --- Opt-In Public Study Profiles (Zero PII) ---
+    // --- Discoverable Study Profiles (Zero PII; Private Profiles Require Request Approval) ---
     match /publicProfiles/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && (
-        isOwner(userId)
-        || (resource != null && existing().isPublic == true)
-      );
-      allow list: if isSignedIn() && (
-        existing().isPublic == true
-        || existing().uid == request.auth.uid
-      );
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && existing().uid is string && existing().handle is string;
       allow create: if isOwner(userId) && isValidId(userId)
         && isValidPublicProfile(incoming())
         && incoming().createdAt == request.time
@@ -662,6 +682,43 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'avatarUrl', 'bio', 'pastelTheme', 'isPublic', 'updatedAt']);
       allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    // --- Friend Requests for Private Study Profiles ---
+    match /friendRequests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId) && (
+        resource == null
+        || existing().fromUid == request.auth.uid
+        || existing().toUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        existing().fromUid == request.auth.uid
+        || existing().toUid == request.auth.uid
+      );
+      allow create: if isSignedIn() && isValidId(requestId)
+        && isValidFriendRequest(incoming())
+        && incoming().fromUid == request.auth.uid
+        && requestId == incoming().fromUid + '__' + incoming().toUid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/publicProfiles/$(incoming().toUid));
+      allow update: if isSignedIn() && isValidId(requestId)
+        && isValidFriendRequest(incoming())
+        && existing().toUid == request.auth.uid
+        && existing().status == 'pending'
+        && incoming().status in ['accepted', 'declined']
+        && incoming().fromUid == existing().fromUid
+        && incoming().toUid == existing().toUid
+        && incoming().fromHandle == existing().fromHandle
+        && incoming().fromDisplayName == existing().fromDisplayName
+        && incoming().toHandle == existing().toHandle
+        && incoming().toDisplayName == existing().toDisplayName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(requestId)
+        && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid);
     }
   }
 }

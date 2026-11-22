@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { signOut, updateProfile } from 'firebase/auth';
 import {
   Bell,
   Check,
+  Clock,
   Copy,
   Globe,
   Layers,
@@ -13,17 +14,28 @@ import {
   Trash2,
   Upload,
   User,
+  UserCheck,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import { auth } from '../lib/firebase';
-import { addFriend, normalizeHandle, removeFriend, updateUserProfile } from '../lib/studyRepo';
+import {
+  addFriend,
+  cancelFriendRequest,
+  normalizeHandle,
+  removeFriend,
+  respondToFriendRequest,
+  sendFriendRequest,
+  updateUserProfile,
+} from '../lib/studyRepo';
 import {
   BLUEPRINT_LIMITS,
   DEFAULT_NOTIFICATION_SETTINGS,
   DEFAULT_REVIEW_INTERVALS,
   PASTEL_THEMES,
   type FriendLink,
+  type FriendRequest,
   type NotificationSettings,
   type PastelThemeId,
   type PublicProfile,
@@ -33,8 +45,11 @@ import {
 interface SettingsViewProps {
   uid: string;
   profile: UserProfile;
+  profileLoaded: boolean;
   friends: FriendLink[];
   publicProfiles: PublicProfile[];
+  incomingRequests: FriendRequest[];
+  outgoingRequests: FriendRequest[];
 }
 
 async function compressImageToDataUrl(file: File): Promise<string> {
@@ -65,23 +80,26 @@ function getInitials(name: string): string {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   uid,
   profile,
+  profileLoaded,
   friends,
   publicProfiles,
+  incomingRequests,
+  outgoingRequests,
 }) => {
   const [displayName, setDisplayName] = useState(profile.displayName);
-  const [handleInput, setHandleInput] = useState(
-    profile.handle || normalizeHandle(`${profile.displayName}_${uid.slice(0, 4)}`, uid),
-  );
+  const [handleInput, setHandleInput] = useState(profile.handle || '');
   const [bio, setBio] = useState(profile.bio || '');
   const [avatarUrl, setAvatarUrl] = useState(profile.avatarUrl || '');
   const [dailyGoalMinutes, setDailyGoalMinutes] = useState(profile.dailyGoalMinutes || 120);
   const [isPublic, setIsPublic] = useState(Boolean(profile.isPublic));
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [copiedHandle, setCopiedHandle] = useState(false);
 
   const [friendSearch, setFriendSearch] = useState('');
   const [busyFriendUid, setBusyFriendUid] = useState<string | null>(null);
+  const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
   const [friendNotice, setFriendNotice] = useState<string | null>(null);
 
   const baseIntervals = profile.reviewIntervals || DEFAULT_REVIEW_INTERVALS;
@@ -91,15 +109,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [savingIntervals, setSavingIntervals] = useState(false);
   const [intervalsSavedMsg, setIntervalsSavedMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    setDisplayName(profile.displayName);
+  }, [profile.displayName]);
+
+  useEffect(() => {
+    if (profile.handle) {
+      setHandleInput(profile.handle);
+    } else if (profileLoaded) {
+      setHandleInput(normalizeHandle(`${profile.displayName}_${uid.slice(0, 4)}`, uid));
+    }
+  }, [profile.handle, profile.displayName, profileLoaded, uid]);
+
+  useEffect(() => {
+    setBio(profile.bio || '');
+  }, [profile.bio]);
+
+  useEffect(() => {
+    setAvatarUrl(profile.avatarUrl || '');
+  }, [profile.avatarUrl]);
+
+  useEffect(() => {
+    setDailyGoalMinutes(profile.dailyGoalMinutes || 120);
+  }, [profile.dailyGoalMinutes]);
+
+  useEffect(() => {
+    setIsPublic(Boolean(profile.isPublic));
+  }, [profile.isPublic]);
+
+  useEffect(() => {
+    const iv = profile.reviewIntervals || DEFAULT_REVIEW_INTERVALS;
+    setHardDays(String(iv.hardDays));
+    setMidDays(String(iv.midDays));
+    setEasyDays(String(iv.easyDays));
+  }, [profile.reviewIntervals]);
+
   const notifSettings: NotificationSettings =
     profile.notificationSettings || DEFAULT_NOTIFICATION_SETTINGS;
 
   const friendUidSet = useMemo(() => new Set(friends.map((f) => f.friendUid)), [friends]);
 
+  const outgoingByTargetUid = useMemo(() => {
+    const map = new Map<string, FriendRequest>();
+    outgoingRequests.forEach((req) => {
+      map.set(req.toUid, req);
+    });
+    return map;
+  }, [outgoingRequests]);
+
+  const pendingIncomingRequests = useMemo(
+    () => incomingRequests.filter((r) => r.status === 'pending'),
+    [incomingRequests],
+  );
+
   const discoverableScholars = useMemo(() => {
-    const q = friendSearch.trim().toLowerCase();
+    const q = friendSearch.trim().toLowerCase().replace(/^@/, '');
     return publicProfiles
-      .filter((p) => p.uid !== uid && p.isPublic && !friendUidSet.has(p.uid))
+      .filter((p) => p.uid !== uid && !friendUidSet.has(p.uid))
       .filter((p) => {
         if (!q) return true;
         return (
@@ -108,69 +174,99 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           (p.bio || '').toLowerCase().includes(q)
         );
       })
-      .slice(0, 12);
+      .slice(0, 16);
   }, [publicProfiles, uid, friendUidSet, friendSearch]);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
+    if (!profileLoaded) return;
+    setProfileError(null);
     setSavedNotice(null);
+
+    const cleanedHandle = handleInput
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '')
+      .slice(0, BLUEPRINT_LIMITS.HANDLE_MAX);
+
+    if (cleanedHandle.length < 3) {
+      setProfileError('Study handle must be at least 3 characters (letters, numbers, _ or -).');
+      return;
+    }
+
+    setSaving(true);
     try {
-      const normalized = normalizeHandle(handleInput || displayName, uid);
-      setHandleInput(normalized);
+      setHandleInput(cleanedHandle);
       await updateUserProfile(uid, {
         displayName,
         bio,
         avatarUrl,
         dailyGoalMinutes,
         isPublic,
-        handle: normalized,
+        handle: cleanedHandle,
       });
       if (auth.currentUser) {
-        await updateProfile(auth.currentUser, {
-          displayName: displayName.trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
-        });
+        try {
+          await updateProfile(auth.currentUser, {
+            displayName: displayName.trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
+          });
+        } catch {
+          // Non-fatal: Firestore profile is the source of truth
+        }
       }
       setSavedNotice('Profile saved.');
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Unable to save profile right now.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleTogglePublicProfile = async () => {
+    if (!profileLoaded) return;
     const next = !isPublic;
     setIsPublic(next);
     setSavedNotice(null);
-    const normalized = normalizeHandle(handleInput || displayName, uid);
-    setHandleInput(normalized);
-    await updateUserProfile(uid, {
-      isPublic: next,
-      handle: normalized,
-      displayName,
-      bio,
-      avatarUrl,
-    });
-    setSavedNotice(next ? 'Your profile is now public.' : 'Your profile is now private.');
+    setProfileError(null);
+    try {
+      await updateUserProfile(uid, {
+        isPublic: next,
+      });
+      setSavedNotice(
+        next
+          ? 'Your profile is now public. Anyone can add you directly.'
+          : 'Your profile is now private. People can still find you in search, but must request to add you.',
+      );
+    } catch (err) {
+      setIsPublic(!next);
+      setProfileError(err instanceof Error ? err.message : 'Unable to update visibility setting.');
+    }
   };
 
   const handleUploadAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    setProfileError(null);
     try {
       const compressed = await compressImageToDataUrl(file);
       setAvatarUrl(compressed);
       await updateUserProfile(uid, { avatarUrl: compressed });
       setSavedNotice('Profile picture updated.');
     } catch {
-      setSavedNotice('Could not process that image file.');
+      setProfileError('Could not process that image file.');
     }
   };
 
   const handleClearAvatar = async () => {
+    setProfileError(null);
     setAvatarUrl('');
-    await updateUserProfile(uid, { avatarUrl: '' });
-    setSavedNotice('Using clean initials avatar.');
+    try {
+      await updateUserProfile(uid, { avatarUrl: '' });
+      setSavedNotice('Using clean initials avatar.');
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Unable to clear profile picture.');
+    }
   };
 
   const handleSelectTheme = async (themeId: PastelThemeId) => {
@@ -178,7 +274,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleCopyHandle = async () => {
-    const normalized = normalizeHandle(handleInput || displayName, uid);
+    const cleaned = handleInput.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const normalized = cleaned.length >= 3 ? cleaned : normalizeHandle(displayName, uid);
     try {
       await navigator.clipboard.writeText(`@${normalized}`);
       setCopiedHandle(true);
@@ -198,6 +295,56 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setFriendNotice(err instanceof Error ? err.message : 'Unable to add friend right now.');
     } finally {
       setBusyFriendUid(null);
+    }
+  };
+
+  const handleSendRequest = async (target: PublicProfile) => {
+    setBusyFriendUid(target.uid);
+    setFriendNotice(null);
+    try {
+      const senderProfile: UserProfile = {
+        ...profile,
+        handle:
+          handleInput.trim().length >= 3
+            ? handleInput.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+            : profile.handle,
+      };
+      await sendFriendRequest(senderProfile, target);
+      setFriendNotice(`Friend request sent to ${target.displayName}.`);
+    } catch (err) {
+      setFriendNotice(err instanceof Error ? err.message : 'Unable to send friend request right now.');
+    } finally {
+      setBusyFriendUid(null);
+    }
+  };
+
+  const handleCancelRequest = async (req: FriendRequest) => {
+    setBusyFriendUid(req.toUid);
+    setFriendNotice(null);
+    try {
+      await cancelFriendRequest(req.id);
+      setFriendNotice(`Cancelled request to ${req.toDisplayName}.`);
+    } catch (err) {
+      setFriendNotice(err instanceof Error ? err.message : 'Unable to cancel request.');
+    } finally {
+      setBusyFriendUid(null);
+    }
+  };
+
+  const handleRespondRequest = async (req: FriendRequest, decision: 'accepted' | 'declined') => {
+    setBusyRequestId(req.id);
+    setFriendNotice(null);
+    try {
+      await respondToFriendRequest(req.id, decision);
+      setFriendNotice(
+        decision === 'accepted'
+          ? `Approved ${req.fromDisplayName}'s friend request.`
+          : `Declined ${req.fromDisplayName}'s friend request.`,
+      );
+    } catch (err) {
+      setFriendNotice(err instanceof Error ? err.message : 'Unable to respond to request.');
+    } finally {
+      setBusyRequestId(null);
     }
   };
 
@@ -310,8 +457,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           <button
             type="button"
+            disabled={!profileLoaded}
             onClick={() => void handleTogglePublicProfile()}
-            className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer ${
+            className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50 ${
               isPublic
                 ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border-[var(--pastel-accent)]'
                 : 'bg-[var(--pastel-canvas)] text-[var(--pastel-ink)] border-[var(--pastel-border)] hover:bg-[var(--pastel-soft)]'
@@ -359,7 +507,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               )}
             </div>
             <p className="text-[11px] text-[var(--pastel-muted)]">
-              When your profile is public, other learners can look up your display name and @{handleInput} to add you as a study friend.
+              {isPublic
+                ? `Your profile is public. Learners can search @${handleInput || '...'} and add you directly.`
+                : `Your profile is private. Learners can still find @${handleInput || '...'} in search, but must send a friend request for you to approve.`}
             </p>
           </div>
         </div>
@@ -441,13 +591,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             />
           </div>
 
-          <div className="flex items-center justify-between pt-2">
-            <span className="text-xs text-[var(--pastel-muted)]">
-              {savedNotice || (profile.email ? `Signed in as ${profile.email}` : '')}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <span className={`text-xs ${profileError ? 'text-red-700 font-bold' : 'text-[var(--pastel-muted)]'}`}>
+              {profileError || savedNotice || (profile.email ? `Signed in as ${profile.email}` : '')}
             </span>
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || !profileLoaded}
               className="px-5 py-2.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold hover:opacity-90 cursor-pointer disabled:opacity-50"
             >
               {saving ? 'Saving...' : 'Save Profile'}
@@ -456,7 +606,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </form>
       </section>
 
-      {/* Study Friends & Public Directory */}
+      {/* Study Friends, Private Requests & Search Directory */}
       <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -466,14 +616,84 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 Study Friends ({friends.length})
               </h2>
               <p className="text-xs text-[var(--pastel-muted)]">
-                Find learners with public profiles by name or @handle and add them to your study circle.
+                Search any learner by name or @handle. Public profiles can be added directly; private profiles require request approval.
               </p>
             </div>
           </div>
         </div>
 
+        {/* Incoming Friend Requests */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-bold text-[var(--pastel-muted)]">
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>Incoming Friend Requests ({pendingIncomingRequests.length})</span>
+            </div>
+            {!isPublic && (
+              <span className="text-[11px] text-[var(--pastel-muted)]">
+                Private account approval queue
+              </span>
+            )}
+          </div>
+
+          <div className="divide-y divide-[var(--pastel-border)] border border-[var(--pastel-border)] rounded-2xl px-4">
+            {pendingIncomingRequests.length === 0 ? (
+              <p className="py-4 text-center text-xs text-[var(--pastel-muted)]">
+                No pending friend requests right now.
+              </p>
+            ) : (
+              pendingIncomingRequests.map((req) => (
+                <div key={req.id} className="py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {req.fromAvatarUrl ? (
+                      <img
+                        src={req.fromAvatarUrl}
+                        alt={req.fromDisplayName}
+                        referrerPolicy="no-referrer"
+                        className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
+                        {getInitials(req.fromDisplayName)}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold truncate">{req.fromDisplayName}</div>
+                      <div className="text-xs text-[var(--pastel-muted)] truncate">
+                        @{req.fromHandle}
+                        {req.fromBio ? ` · ${req.fromBio}` : ''}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busyRequestId === req.id}
+                      onClick={() => void handleRespondRequest(req, 'accepted')}
+                      className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer disabled:opacity-50"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>{busyRequestId === req.id ? 'Saving...' : 'Accept'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyRequestId === req.id}
+                      onClick={() => void handleRespondRequest(req, 'declined')}
+                      className="px-3.5 py-1.5 rounded-full border border-[var(--pastel-border)] text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] hover:bg-[var(--pastel-soft)] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Decline</span>
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Search & Add Public Friends */}
+          {/* Search & Add / Request Scholars */}
           <div className="space-y-3">
             <div className="relative">
               <Search className="w-4 h-4 text-[var(--pastel-muted)] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -481,7 +701,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="text"
                 value={friendSearch}
                 onChange={(e) => setFriendSearch(e.target.value)}
-                placeholder="Search public profiles by name or @handle..."
+                placeholder="Search learners by name or @handle..."
                 className="w-full pl-9 pr-4 py-2.5 text-sm font-semibold rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
               />
             </div>
@@ -496,45 +716,94 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {discoverableScholars.length === 0 ? (
                 <p className="py-6 text-center text-xs text-[var(--pastel-muted)]">
                   {friendSearch.trim()
-                    ? 'No matching public profiles found.'
-                    : 'No other public study profiles available right now. Toggle "Public Profile Enabled" above to appear here.'}
+                    ? 'No matching study profiles found.'
+                    : 'No other study profiles available right now.'}
                 </p>
               ) : (
-                discoverableScholars.map((person) => (
-                  <div key={person.uid} className="py-3 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      {person.avatarUrl ? (
-                        <img
-                          src={person.avatarUrl}
-                          alt={person.displayName}
-                          referrerPolicy="no-referrer"
-                          className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
-                        />
-                      ) : (
-                        <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
-                          {getInitials(person.displayName)}
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold truncate">{person.displayName}</div>
-                        <div className="text-xs text-[var(--pastel-muted)] truncate">
-                          @{person.handle}
-                          {person.bio ? ` · ${person.bio}` : ''}
+                discoverableScholars.map((person) => {
+                  const outgoingReq = outgoingByTargetUid.get(person.uid);
+                  const isBusy = busyFriendUid === person.uid;
+
+                  return (
+                    <div key={person.uid} className="py-3 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {person.avatarUrl ? (
+                          <img
+                            src={person.avatarUrl}
+                            alt={person.displayName}
+                            referrerPolicy="no-referrer"
+                            className="w-9 h-9 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
+                          />
+                        ) : (
+                          <div className="w-9 h-9 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
+                            {getInitials(person.displayName)}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-sm font-bold truncate">{person.displayName}</span>
+                            {!person.isPublic && (
+                              <Lock
+                                className="w-3 h-3 text-[var(--pastel-muted)] shrink-0"
+                                aria-label="Private account"
+                              />
+                            )}
+                          </div>
+                          <div className="text-xs text-[var(--pastel-muted)] truncate">
+                            @{person.handle}
+                            {!person.isPublic ? ' · Private' : ''}
+                            {person.bio ? ` · ${person.bio}` : ''}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <button
-                      type="button"
-                      disabled={busyFriendUid === person.uid}
-                      onClick={() => void handleAddFriend(person)}
-                      className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer shrink-0 disabled:opacity-50"
-                    >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>{busyFriendUid === person.uid ? 'Adding...' : 'Add'}</span>
-                    </button>
-                  </div>
-                ))
+                      {person.isPublic || outgoingReq?.status === 'accepted' ? (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleAddFriend(person)}
+                          className="px-3.5 py-1.5 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer shrink-0 disabled:opacity-50"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>{isBusy ? 'Adding...' : 'Add'}</span>
+                        </button>
+                      ) : outgoingReq?.status === 'pending' ? (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="px-3 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-soft)] text-[var(--pastel-muted)] text-xs font-bold inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            <span>Requested</span>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleCancelRequest(outgoingReq)}
+                            aria-label={`Cancel request to ${person.displayName}`}
+                            title="Cancel request"
+                            className="p-1.5 rounded-full border border-[var(--pastel-border)] text-[var(--pastel-muted)] hover:text-red-600 hover:bg-[var(--pastel-soft)] cursor-pointer disabled:opacity-50"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleSendRequest(person)}
+                          className="px-3.5 py-1.5 rounded-full border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shrink-0 disabled:opacity-50"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>
+                            {isBusy
+                              ? 'Sending...'
+                              : outgoingReq?.status === 'declined'
+                                ? 'Request Again'
+                                : 'Request'}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>

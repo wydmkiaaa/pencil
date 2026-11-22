@@ -32,6 +32,7 @@ import {
   type FocusSession,
   type Flashcard,
   type FriendLink,
+  type FriendRequest,
   type NotificationSettings,
   type ParticipantStatus,
   type PastelThemeId,
@@ -91,10 +92,38 @@ export async function ensureUserProfile(
 ): Promise<UserProfile> {
   const path = `users/${uid}`;
   const ref = doc(db, 'users', uid);
+  const pubRef = doc(db, 'publicProfiles', uid);
   try {
     const snap = await getDoc(ref);
     if (snap.exists()) {
-      return snap.data() as UserProfile;
+      const existing = snap.data() as UserProfile;
+      const resolvedHandle =
+        existing.handle && existing.handle.trim().length >= 3
+          ? normalizeHandle(existing.handle, uid)
+          : normalizeHandle(`${existing.displayName || defaults.displayName}_${uid.slice(0, 4)}`, uid);
+
+      if (!existing.handle) {
+        await updateDoc(ref, {
+          handle: resolvedHandle,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      const pubSnap = await getDoc(pubRef);
+      if (!pubSnap.exists()) {
+        await setDoc(pubRef, {
+          uid,
+          handle: resolvedHandle,
+          displayName: (existing.displayName || 'Scholar').slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
+          avatarUrl: (existing.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
+          bio: (existing.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
+          pastelTheme: existing.pastelTheme || 'stone',
+          isPublic: Boolean(existing.isPublic),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      return existing.handle ? existing : { ...existing, handle: resolvedHandle };
     }
     const cleanName = (defaults.displayName || 'Scholar').trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Scholar';
     const handle = normalizeHandle(`${cleanName}_${uid.slice(0, 4)}`, uid);
@@ -114,6 +143,17 @@ export async function ensureUserProfile(
       updatedAt: serverTimestamp(),
     };
     await setDoc(ref, profile);
+    await setDoc(pubRef, {
+      uid,
+      handle,
+      displayName: cleanName,
+      avatarUrl: profile.avatarUrl || '',
+      bio: '',
+      pastelTheme: 'stone',
+      isPublic: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
     return profile;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -239,9 +279,6 @@ export async function updateUserProfile(
     handleFirestoreError(error, OperationType.GET, publicPath);
   }
 
-  const shouldSync = Boolean(latest.isPublic) || pubExists;
-  if (!shouldSync) return;
-
   const handleVal = normalizeHandle(latest.handle || latest.displayName, uid);
   if (pubExists) {
     try {
@@ -276,12 +313,11 @@ export async function updateUserProfile(
   }
 }
 
-// --- Public Profiles & Friends ---
+// --- Discoverable Study Profiles, Friends & Friend Requests ---
 export function subscribePublicProfiles(onData: (profiles: PublicProfile[]) => void): Unsubscribe {
   const path = 'publicProfiles';
-  const q = query(collection(db, 'publicProfiles'), where('isPublic', '==', true));
   return onSnapshot(
-    q,
+    collection(db, 'publicProfiles'),
     (snap) => {
       onData(snap.docs.map((d) => ({ ...(d.data() as PublicProfile), uid: d.id })));
     },
@@ -304,16 +340,25 @@ export function subscribeFriends(uid: string, onData: (friends: FriendLink[]) =>
 export async function addFriend(uid: string, target: PublicProfile): Promise<void> {
   if (target.uid === uid) return;
   const path = `users/${uid}/friends/${target.uid}`;
+  const friendRef = doc(db, 'users', uid, 'friends', target.uid);
+  const payload = {
+    handle: normalizeHandle(target.handle, target.uid),
+    displayName: target.displayName.slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
+    avatarUrl: (target.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
+    bio: (target.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
+  };
   try {
-    await setDoc(doc(db, 'users', uid, 'friends', target.uid), {
-      ownerId: uid,
-      friendUid: target.uid,
-      handle: normalizeHandle(target.handle, target.uid),
-      displayName: target.displayName.slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
-      avatarUrl: (target.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
-      bio: (target.bio || '').slice(0, BLUEPRINT_LIMITS.BIO_MAX),
-      createdAt: serverTimestamp(),
-    });
+    const existingSnap = await getDoc(friendRef);
+    if (existingSnap.exists()) {
+      await updateDoc(friendRef, payload);
+    } else {
+      await setDoc(friendRef, {
+        ownerId: uid,
+        friendUid: target.uid,
+        ...payload,
+        createdAt: serverTimestamp(),
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -323,6 +368,134 @@ export async function removeFriend(uid: string, friendUid: string): Promise<void
   const path = `users/${uid}/friends/${friendUid}`;
   try {
     await deleteDoc(doc(db, 'users', uid, 'friends', friendUid));
+    try {
+      const reqRef = doc(db, 'friendRequests', `${uid}__${friendUid}`);
+      const reqSnap = await getDoc(reqRef);
+      if (reqSnap.exists()) {
+        await deleteDoc(reqRef);
+      }
+    } catch {
+      // Ignore optional cleanup if no request record exists
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+function toTimestampMs(val: unknown): number {
+  if (!val) return 0;
+  if (typeof val === 'object' && val !== null && 'toMillis' in val && typeof (val as { toMillis: () => number }).toMillis === 'function') {
+    return (val as { toMillis: () => number }).toMillis();
+  }
+  if (typeof val === 'string') {
+    const parsed = Date.parse(val);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+export function subscribeIncomingFriendRequests(
+  uid: string,
+  onData: (requests: FriendRequest[]) => void,
+): Unsubscribe {
+  const path = 'friendRequests';
+  const q = query(collection(db, 'friendRequests'), where('toUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<FriendRequest, 'id'>) }))
+        .sort((a, b) => toTimestampMs(b.updatedAt || b.createdAt) - toTimestampMs(a.updatedAt || a.createdAt));
+      onData(items);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path),
+  );
+}
+
+export function subscribeOutgoingFriendRequests(
+  uid: string,
+  onData: (requests: FriendRequest[]) => void,
+): Unsubscribe {
+  const path = 'friendRequests';
+  const q = query(collection(db, 'friendRequests'), where('fromUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<FriendRequest, 'id'>) }))
+        .sort((a, b) => toTimestampMs(b.updatedAt || b.createdAt) - toTimestampMs(a.updatedAt || a.createdAt));
+      onData(items);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path),
+  );
+}
+
+export async function sendFriendRequest(fromProfile: UserProfile, target: PublicProfile): Promise<void> {
+  if (fromProfile.uid === target.uid) return;
+  const requestId = `${fromProfile.uid}__${target.uid}`;
+  const path = `friendRequests/${requestId}`;
+  const reqRef = doc(db, 'friendRequests', requestId);
+  try {
+    const existingSnap = await getDoc(reqRef);
+    if (existingSnap.exists()) {
+      const existingData = existingSnap.data() as Omit<FriendRequest, 'id'>;
+      if (existingData.status === 'pending') {
+        return;
+      }
+      if (existingData.status === 'accepted') {
+        await addFriend(fromProfile.uid, target);
+        return;
+      }
+      if (existingData.status === 'declined') {
+        await deleteDoc(reqRef);
+      }
+    }
+
+    const fromHandle = normalizeHandle(
+      fromProfile.handle || `${fromProfile.displayName}_${fromProfile.uid.slice(0, 4)}`,
+      fromProfile.uid,
+    );
+    const toHandle = normalizeHandle(target.handle || target.displayName, target.uid);
+
+    await setDoc(reqRef, {
+      fromUid: fromProfile.uid,
+      toUid: target.uid,
+      fromHandle,
+      fromDisplayName: (fromProfile.displayName || 'Scholar').trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Scholar',
+      fromAvatarUrl: (fromProfile.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
+      fromBio: (fromProfile.bio || '').trim().slice(0, BLUEPRINT_LIMITS.BIO_MAX),
+      toHandle,
+      toDisplayName: (target.displayName || 'Scholar').trim().slice(0, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Scholar',
+      toAvatarUrl: (target.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
+      toBio: (target.bio || '').trim().slice(0, BLUEPRINT_LIMITS.BIO_MAX),
+      status: 'pending',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function respondToFriendRequest(
+  requestId: string,
+  decision: 'accepted' | 'declined',
+): Promise<void> {
+  const path = `friendRequests/${requestId}`;
+  try {
+    await updateDoc(doc(db, 'friendRequests', requestId), {
+      status: decision,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function cancelFriendRequest(requestId: string): Promise<void> {
+  const path = `friendRequests/${requestId}`;
+  try {
+    await deleteDoc(doc(db, 'friendRequests', requestId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }

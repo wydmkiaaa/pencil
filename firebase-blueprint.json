@@ -270,7 +270,7 @@
     },
     "PublicProfile": {
       "title": "PublicProfile",
-      "description": "Opt-in public study profile (no PII) discoverable by friends.",
+      "description": "Discoverable study profile (no PII) visible in friend search; private profiles require an accepted FriendRequest before adding.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -302,6 +302,27 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerId", "friendUid", "handle", "displayName", "createdAt"]
+    },
+    "FriendRequest": {
+      "title": "FriendRequest",
+      "description": "Friend/follow request sent to a private study profile, requiring recipient approval.",
+      "type": "object",
+      "properties": {
+        "fromUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "toUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fromHandle": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-z0-9_\\-]+$" },
+        "fromDisplayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "fromAvatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "fromBio": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "toHandle": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-z0-9_\\-]+$" },
+        "toDisplayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "toAvatarUrl": { "type": "string", "minLength": 0, "maxLength": 100000 },
+        "toBio": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fromUid", "toUid", "fromHandle", "fromDisplayName", "toHandle", "toDisplayName", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -313,9 +334,13 @@
       "schema": { "$ref": "#/entities/FriendLink" },
       "description": "User added study friends."
     },
+    "/friendRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/FriendRequest" },
+      "description": "Pending, accepted, and declined friend requests for private study profiles."
+    },
     "/publicProfiles/{userId}": {
       "schema": { "$ref": "#/entities/PublicProfile" },
-      "description": "Publicly visible study profiles without PII."
+      "description": "Discoverable study profiles without PII."
     },
     "/users/{userId}/tasks/{taskId}": {
       "schema": { "$ref": "#/entities/StudyTask" },
