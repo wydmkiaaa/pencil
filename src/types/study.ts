@@ -90,7 +90,7 @@ export const BLUEPRINT_LIMITS = {
   BLURT_TEXT_MAX: 20000,
   ROOM_NAME_MAX: 100,
   ROOM_TOPIC_MAX: 160,
-  ROOM_MESSAGE_MAX: 280,
+  ROOM_MESSAGE_MAX: 1000,
 } as const;
 
 export interface UserProfile {
@@ -307,6 +307,8 @@ export interface FocusRoom {
   timerStartedAtMs: number;
   timerAccumulatedSeconds: number;
   ambientSound: AmbientSoundId;
+  chatEnabled?: boolean;
+  voiceEnabled?: boolean;
   isActive: boolean;
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -322,6 +324,10 @@ export interface RoomParticipant {
   avatarUrl?: string;
   subjectName?: string;
   status: ParticipantStatus;
+  voiceJoined?: boolean;
+  isMuted?: boolean;
+  isSpeaking?: boolean;
+  voiceSessionId?: string;
   joinedAt?: unknown;
   updatedAt?: unknown;
 }
@@ -335,6 +341,34 @@ export interface RoomMessage {
   senderName: string;
   text: string;
   createdAt?: unknown;
+}
+
+export type VoiceSignalKind = 'offer' | 'answer' | 'ice' | 'bye';
+
+export interface RoomVoiceSignal {
+  id: string;
+  roomId: string;
+  roomVisibility: RoomVisibility;
+  roomHostId: string;
+  fromUid: string;
+  toUid: string;
+  sessionId: string;
+  kind: VoiceSignalKind;
+  payload: string;
+  createdAt?: unknown;
+}
+
+export type VoiceInputMode = 'open_mic' | 'push_to_talk';
+
+export interface VoiceSettings {
+  inputDeviceId: string;
+  outputDeviceId: string;
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+  voiceMode: VoiceInputMode;
+  masterVolume: number;
+  deafened: boolean;
 }
 
 export const PASTEL_THEMES: Array<{

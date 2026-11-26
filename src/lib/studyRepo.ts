@@ -44,12 +44,14 @@ import {
   type RoomParticipant,
   type RoomTimerStatus,
   type RoomVisibility,
+  type RoomVoiceSignal,
   type StudyTask,
   type Subject,
   type TaskPriority,
   type TaskStatus,
   type UserProfile,
   type VideoLecture,
+  type VoiceSignalKind,
 } from '../types/study';
 
 function genId(prefix: string): string {
@@ -1333,6 +1335,8 @@ export async function createFocusRoom(
     timerMode: 'timer' | 'stopwatch';
     timerDurationSeconds: number;
     ambientSound: AmbientSoundId;
+    chatEnabled?: boolean;
+    voiceEnabled?: boolean;
   },
 ): Promise<string> {
   const shortCode = Math.random().toString(36).slice(2, 8);
@@ -1356,6 +1360,8 @@ export async function createFocusRoom(
       timerStartedAtMs: 0,
       timerAccumulatedSeconds: 0,
       ambientSound: input.ambientSound,
+      chatEnabled: input.chatEnabled ?? true,
+      voiceEnabled: input.voiceEnabled ?? true,
       isActive: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -1381,6 +1387,10 @@ export async function createFocusRoom(
       avatarUrl: (profile.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
       subjectName: 'General Study',
       status: 'focusing' as ParticipantStatus,
+      voiceJoined: false,
+      isMuted: true,
+      isSpeaking: false,
+      voiceSessionId: '',
       joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -1454,12 +1464,24 @@ export async function joinFocusRoom(
         avatarUrl: (profile.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
         subjectName: (subjectName || 'General Study').slice(0, 100),
         status: 'focusing' as ParticipantStatus,
+        voiceJoined: false,
+        isMuted: true,
+        isSpeaking: false,
+        voiceSessionId: '',
         joinedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     }
 
     await batch.commit();
+    if (existingParticipantSnap.exists() && existingParticipantSnap.data()?.voiceJoined) {
+      await updateParticipantVoiceState(roomId, uid, {
+        voiceJoined: false,
+        isMuted: true,
+        isSpeaking: false,
+        voiceSessionId: '',
+      });
+    }
     return roomData;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1529,6 +1551,22 @@ export async function updateRoomTimerAndSound(
   }
 }
 
+export async function updateRoomCommunicationSettings(
+  roomId: string,
+  updates: { chatEnabled: boolean; voiceEnabled: boolean },
+): Promise<void> {
+  const path = `focusRooms/${roomId}`;
+  try {
+    await updateDoc(doc(db, 'focusRooms', roomId), {
+      chatEnabled: Boolean(updates.chatEnabled),
+      voiceEnabled: Boolean(updates.voiceEnabled),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function updateParticipantState(
   roomId: string,
   uid: string,
@@ -1541,6 +1579,30 @@ export async function updateParticipantState(
       avatarUrl: (updates.avatarUrl || '').slice(0, BLUEPRINT_LIMITS.AVATAR_URL_MAX),
       subjectName: updates.subjectName.slice(0, 100),
       status: updates.status,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateParticipantVoiceState(
+  roomId: string,
+  uid: string,
+  updates: {
+    voiceJoined: boolean;
+    isMuted: boolean;
+    isSpeaking: boolean;
+    voiceSessionId: string;
+  },
+): Promise<void> {
+  const path = `focusRooms/${roomId}/participants/${uid}`;
+  try {
+    await updateDoc(doc(db, 'focusRooms', roomId, 'participants', uid), {
+      voiceJoined: Boolean(updates.voiceJoined),
+      isMuted: Boolean(updates.isMuted),
+      isSpeaking: Boolean(updates.isSpeaking),
+      voiceSessionId: updates.voiceSessionId.slice(0, 64),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1568,6 +1630,90 @@ export async function sendRoomMessage(
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteRoomMessage(roomId: string, messageId: string): Promise<void> {
+  const path = `focusRooms/${roomId}/messages/${messageId}`;
+  try {
+    await deleteDoc(doc(db, 'focusRooms', roomId, 'messages', messageId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+function timestampToMillis(ts: unknown): number {
+  if (!ts) return Number.MAX_SAFE_INTEGER;
+  const maybe = ts as { toMillis?: () => number; seconds?: number };
+  if (typeof maybe.toMillis === 'function') return maybe.toMillis();
+  if (typeof maybe.seconds === 'number') return maybe.seconds * 1000;
+  return Number.MAX_SAFE_INTEGER;
+}
+
+const SIGNAL_KIND_ORDER: Record<RoomVoiceSignal['kind'], number> = {
+  bye: 0,
+  offer: 1,
+  answer: 2,
+  ice: 3,
+};
+
+export function subscribeRoomVoiceSignals(
+  roomId: string,
+  toUid: string,
+  onSignals: (signals: RoomVoiceSignal[]) => void,
+): Unsubscribe {
+  const path = `focusRooms/${roomId}/voiceSignals`;
+  const q = query(collection(db, 'focusRooms', roomId, 'voiceSignals'), where('toUid', '==', toUid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<RoomVoiceSignal, 'id'>) }));
+      list.sort((a, b) => {
+        const diff = timestampToMillis(a.createdAt) - timestampToMillis(b.createdAt);
+        if (diff !== 0) return diff;
+        return (SIGNAL_KIND_ORDER[a.kind] ?? 9) - (SIGNAL_KIND_ORDER[b.kind] ?? 9);
+      });
+      onSignals(list);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, path),
+  );
+}
+
+export async function sendRoomVoiceSignal(
+  room: FocusRoom,
+  input: {
+    fromUid: string;
+    toUid: string;
+    sessionId: string;
+    kind: VoiceSignalKind;
+    payload: string;
+  },
+): Promise<void> {
+  const id = genId('sig');
+  const path = `focusRooms/${room.id}/voiceSignals/${id}`;
+  try {
+    await setDoc(doc(db, 'focusRooms', room.id, 'voiceSignals', id), {
+      roomId: room.id,
+      roomVisibility: room.visibility,
+      roomHostId: room.hostId,
+      fromUid: input.fromUid,
+      toUid: input.toUid,
+      sessionId: input.sessionId.slice(0, 64),
+      kind: input.kind,
+      payload: input.payload.slice(0, 16000),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteRoomVoiceSignal(roomId: string, signalId: string): Promise<void> {
+  const path = `focusRooms/${roomId}/voiceSignals/${signalId}`;
+  try {
+    await deleteDoc(doc(db, 'focusRooms', roomId, 'voiceSignals', signalId));
+  } catch {
+    // Non-fatal cleanup if already deleted
   }
 }
 

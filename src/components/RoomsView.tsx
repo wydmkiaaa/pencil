@@ -1,24 +1,37 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowDown,
   Check,
   Copy,
   Globe,
+  HeadphoneOff,
+  Headphones,
   KeyRound,
   Lock,
   LogOut,
+  MessageSquare,
+  MessageSquareOff,
+  Mic,
+  MicOff,
   Pause,
+  PhoneOff,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Send,
+  SlidersHorizontal,
+  Trash2,
   Users,
   Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { AMBIENT_SOUND_OPTIONS, ambientAudio } from '../lib/ambientAudio';
 import { formatClock, formatDurationShort, getDateKey } from '../lib/spacedRepetition';
 import {
   closeFocusRoom,
   createFocusRoom,
+  deleteRoomMessage,
   joinFocusRoom,
   leaveFocusRoom,
   logFocusSession,
@@ -29,21 +42,36 @@ import {
   subscribeRoomMessages,
   subscribeRoomParticipants,
   updateParticipantState,
+  updateRoomCommunicationSettings,
   updateRoomTimerAndSound,
 } from '../lib/studyRepo';
+import { useRoomVoice } from '../lib/useRoomVoice';
 import { PastelSelect } from './PastelSelect';
-import type {
-  AmbientSoundId,
-  FocusRoom,
-  ParticipantStatus,
-  RoomMessage,
-  RoomParticipant,
-  RoomVisibility,
-  Subject,
-  UserProfile,
+import {
+  BLUEPRINT_LIMITS,
+  type AmbientSoundId,
+  type FocusRoom,
+  type ParticipantStatus,
+  type RoomMessage,
+  type RoomParticipant,
+  type RoomVisibility,
+  type Subject,
+  type UserProfile,
 } from '../types/study';
 
 type RoomTimerMode = 'timer' | 'stopwatch';
+
+function formatMessageTime(createdAt: unknown): string {
+  if (!createdAt) return '';
+  try {
+    const maybeTs = createdAt as { toDate?: () => Date };
+    const date = typeof maybeTs.toDate === 'function' ? maybeTs.toDate() : new Date(String(createdAt));
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
 
 interface RoomsViewProps {
   uid: string;
@@ -82,6 +110,8 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   const [roomTimerMode, setRoomTimerMode] = useState<RoomTimerMode>('timer');
   const [roomTimerMins, setRoomTimerMins] = useState(50);
   const [roomDefaultSound, setRoomDefaultSound] = useState<AmbientSoundId>('brown');
+  const [roomCreateChatEnabled, setRoomCreateChatEnabled] = useState(true);
+  const [roomCreateVoiceEnabled, setRoomCreateVoiceEnabled] = useState(true);
   const [creating, setCreating] = useState(false);
 
   // Join private room form
@@ -94,13 +124,40 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
   const [myStatus, setMyStatus] = useState<ParticipantStatus>('focusing');
-  const [checkInText, setCheckInText] = useState('');
+  const [chatText, setChatText] = useState('');
+  const [sendingChat, setSendingChat] = useState(false);
+  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [localSessionStartMs, setLocalSessionStartMs] = useState<number>(() => Date.now());
+  const [chatScrolledUp, setChatScrolledUp] = useState(false);
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const completedRoomTimerKeyRef = useRef<string>('');
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const isChatPinnedBottomRef = useRef(true);
+  const prevLastMessageIdRef = useRef<string | null>(null);
+  const activeRoomIdRef = useRef<string | null>(null);
+  const uidRef = useRef(uid);
+  const onChangeAmbientSoundRef = useRef(onChangeAmbientSound);
 
   const subjectsMap = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
+
+  const voice = useRoomVoice({
+    room: activeRoom,
+    uid,
+    participants,
+  });
+
+  const voiceLeaveRef = useRef(voice.leaveVoice);
+  activeRoomIdRef.current = activeRoomId;
+  uidRef.current = uid;
+  onChangeAmbientSoundRef.current = onChangeAmbientSound;
+  voiceLeaveRef.current = voice.leaveVoice;
+
+  const stopAllRoomAudio = () => {
+    ambientAudio.stop();
+    onChangeAmbientSoundRef.current('none');
+  };
 
   useEffect(() => {
     const unsubPub = subscribePublicFocusRooms(setPublicRooms);
@@ -112,6 +169,17 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   }, [uid]);
 
   useEffect(() => {
+    return () => {
+      if (activeRoomIdRef.current) {
+        ambientAudio.stop();
+        onChangeAmbientSoundRef.current('none');
+        void voiceLeaveRef.current(true);
+        void leaveFocusRoom(activeRoomIdRef.current, uidRef.current).catch(() => {});
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeRoomId) {
       setActiveRoom(null);
       setParticipants([]);
@@ -120,8 +188,11 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
     }
     const unsubRoom = subscribeFocusRoom(activeRoomId, (room) => {
       if (!room || !room.isActive) {
+        stopAllRoomAudio();
+        void voiceLeaveRef.current(true);
         setActiveRoomId(null);
         setActiveRoom(null);
+        setSessionNotice(null);
         return;
       }
       setActiveRoom(room);
@@ -184,6 +255,59 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
     }
   }, [activeRoom, nowMs, uid, chimesEnabled]);
 
+  const scrollToChatBottom = (behavior: ScrollBehavior = 'smooth') => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    isChatPinnedBottomRef.current = true;
+    setChatScrolledUp(false);
+    setHasUnreadChat(false);
+  };
+
+  const handleChatScroll = () => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom <= 36;
+    isChatPinnedBottomRef.current = atBottom;
+    setChatScrolledUp(!atBottom);
+    if (atBottom) {
+      setHasUnreadChat(false);
+    }
+  };
+
+  useEffect(() => {
+    isChatPinnedBottomRef.current = true;
+    prevLastMessageIdRef.current = null;
+    setChatScrolledUp(false);
+    setHasUnreadChat(false);
+  }, [activeRoom?.id]);
+
+  useEffect(() => {
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+    const lastId = lastMsg?.id ?? null;
+    const isNewTailMessage = lastId !== null && lastId !== prevLastMessageIdRef.current;
+    prevLastMessageIdRef.current = lastId;
+
+    if (!chatScrollRef.current) return;
+
+    if (isChatPinnedBottomRef.current || lastMsg?.senderId === uid) {
+      const rafId = window.requestAnimationFrame(() => {
+        const el = chatScrollRef.current;
+        if (!el) return;
+        el.scrollTop = el.scrollHeight;
+        isChatPinnedBottomRef.current = true;
+        setChatScrolledUp(false);
+        setHasUnreadChat(false);
+      });
+      return () => window.cancelAnimationFrame(rafId);
+    }
+
+    if (isNewTailMessage) {
+      setHasUnreadChat(true);
+    }
+  }, [messages, activeRoom?.id, uid]);
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setRoomError(null);
@@ -202,6 +326,8 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
         timerMode: roomTimerMode,
         timerDurationSeconds: roomTimerMins * 60,
         ambientSound: roomDefaultSound,
+        chatEnabled: roomCreateChatEnabled,
+        voiceEnabled: roomCreateVoiceEnabled,
       });
       onChangeAmbientSound(roomDefaultSound);
       setRoomName('');
@@ -367,16 +493,39 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
 
   const handleLeaveRoom = async () => {
     if (!activeRoom) return;
-    await leaveFocusRoom(activeRoom.id, uid);
+    const roomIdToLeave = activeRoom.id;
+    stopAllRoomAudio();
+    await voice.leaveVoice(true);
     setActiveRoomId(null);
+    setActiveRoom(null);
     setSessionNotice(null);
+    await leaveFocusRoom(roomIdToLeave, uid);
   };
 
   const handleEndRoom = async () => {
     if (!activeRoom || activeRoom.hostId !== uid) return;
-    await closeFocusRoom(activeRoom.id);
+    const roomIdToClose = activeRoom.id;
+    stopAllRoomAudio();
+    await voice.leaveVoice(false);
     setActiveRoomId(null);
+    setActiveRoom(null);
     setSessionNotice(null);
+    await closeFocusRoom(roomIdToClose);
+  };
+
+  const handleToggleHostRoomComms = async (field: 'chatEnabled' | 'voiceEnabled') => {
+    if (!activeRoom || activeRoom.hostId !== uid) return;
+    setRoomError(null);
+    const currentChat = activeRoom.chatEnabled !== false;
+    const currentVoice = activeRoom.voiceEnabled !== false;
+    try {
+      await updateRoomCommunicationSettings(activeRoom.id, {
+        chatEnabled: field === 'chatEnabled' ? !currentChat : currentChat,
+        voiceEnabled: field === 'voiceEnabled' ? !currentVoice : currentVoice,
+      });
+    } catch (err) {
+      setRoomError(err instanceof Error ? err.message : 'Unable to update room communication settings.');
+    }
   };
 
   const handleUpdateMyPresence = async (nextSubjectId: string, nextStatus: ParticipantStatus) => {
@@ -392,12 +541,30 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
     });
   };
 
-  const handleSendCheckIn = async (e: React.FormEvent) => {
+  const handleSendChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeRoom || !checkInText.trim()) return;
-    const text = checkInText.trim();
-    setCheckInText('');
-    await sendRoomMessage(activeRoom, uid, profile.displayName, text);
+    if (!activeRoom || activeRoom.chatEnabled === false || !chatText.trim() || sendingChat) return;
+    const text = chatText.trim();
+    setChatText('');
+    setSendingChat(true);
+    setRoomError(null);
+    try {
+      await sendRoomMessage(activeRoom, uid, profile.displayName, text);
+    } catch (err) {
+      setChatText(text);
+      setRoomError(err instanceof Error ? err.message : 'Could not send message.');
+    } finally {
+      setSendingChat(false);
+    }
+  };
+
+  const handleDeleteChat = async (messageId: string) => {
+    if (!activeRoom) return;
+    try {
+      await deleteRoomMessage(activeRoom.id, messageId);
+    } catch (err) {
+      setRoomError(err instanceof Error ? err.message : 'Could not delete message.');
+    }
   };
 
   const handleCopyCode = async (code: string) => {
@@ -413,6 +580,9 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
   // --- Active Collaborative Room View ---
   if (activeRoom) {
     const isHost = activeRoom.hostId === uid;
+    const chatEnabled = activeRoom.chatEnabled !== false;
+    const voiceEnabled = activeRoom.voiceEnabled !== false;
+    const activeVoiceParticipants = participants.filter((p) => Boolean(p.voiceJoined));
     const elapsed = computeRoomElapsedSeconds(activeRoom);
     const displaySeconds =
       activeRoom.timerMode === 'timer'
@@ -672,9 +842,334 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
                 />
               </div>
             </section>
+
+            {/* Voice Channel & Voice Settings */}
+            <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-full bg-[var(--pastel-soft)] flex items-center justify-center shrink-0">
+                    {voiceEnabled ? (
+                      <Mic className="w-4 h-4 text-[var(--pastel-ink)]" />
+                    ) : (
+                      <MicOff className="w-4 h-4 text-[var(--pastel-muted)]" />
+                    )}
+                  </div>
+                  <div>
+                    <h2 className="text-base font-extrabold tracking-tight">
+                      Voice Room ({activeVoiceParticipants.length} connected)
+                    </h2>
+                    <p className="text-xs text-[var(--pastel-muted)]">
+                      {!voiceEnabled
+                        ? 'Voice chat is muted by the room host for silent study.'
+                        : voice.voiceJoined
+                          ? voice.settings.deafened
+                            ? 'Deafened — incoming voices and mic are muted.'
+                            : voice.settings.voiceMode === 'push_to_talk'
+                              ? voice.isPttPressed
+                                ? 'Transmitting (Push-to-Talk active)'
+                                : 'Push-to-Talk ready — hold Space or Hold to Talk'
+                              : voice.effectiveMuted
+                                ? 'In voice · Microphone muted'
+                                : voice.isSpeaking
+                                  ? 'In voice · Speaking now'
+                                  : 'In voice · Microphone live'
+                          : 'Join voice to talk with learners in this room.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {isHost && (
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleHostRoomComms('voiceEnabled')}
+                      className={`px-3.5 py-1.5 rounded-full border text-xs font-bold cursor-pointer whitespace-nowrap ${
+                        voiceEnabled
+                          ? 'border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)]'
+                          : 'border-red-200 bg-red-50 text-red-700'
+                      }`}
+                    >
+                      {voiceEnabled ? 'Host: Voice On' : 'Host: Voice Off'}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowVoiceSettings((prev) => !prev)}
+                    className={`px-3.5 py-1.5 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                      showVoiceSettings
+                        ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border-[var(--pastel-accent)]'
+                        : 'border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)]'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Voice Settings</span>
+                  </button>
+                </div>
+              </div>
+
+              {voice.voiceError && (
+                <div className="p-3 rounded-2xl border border-red-200 bg-red-50 text-red-800 text-xs">
+                  {voice.voiceError}
+                </div>
+              )}
+
+              {/* Primary Voice Controls */}
+              <div className="flex flex-wrap items-center gap-2">
+                {!voice.voiceJoined ? (
+                  <button
+                    type="button"
+                    disabled={!voiceEnabled || voice.connectingVoice}
+                    onClick={() => void voice.joinVoice()}
+                    className="px-5 py-2 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-90 cursor-pointer disabled:opacity-45"
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    <span>{voice.connectingVoice ? 'Connecting Mic...' : 'Join Voice'}</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void voice.leaveVoice()}
+                      className="px-4 py-2 rounded-full border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <PhoneOff className="w-3.5 h-3.5" />
+                      <span>Leave Voice</span>
+                    </button>
+
+                    {voice.settings.voiceMode === 'open_mic' ? (
+                      <button
+                        type="button"
+                        onClick={() => voice.setIsMuted((prev) => !prev)}
+                        className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer ${
+                          voice.isMuted
+                            ? 'border-red-200 bg-red-50 text-red-700'
+                            : 'border-[var(--pastel-border)] bg-[var(--pastel-soft)] text-[var(--pastel-ink)]'
+                        }`}
+                      >
+                        {voice.isMuted ? (
+                          <MicOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Mic className="w-3.5 h-3.5" />
+                        )}
+                        <span>{voice.isMuted ? 'Unmute Mic' : 'Mute Mic'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onMouseDown={() => voice.setIsPttPressed(true)}
+                        onMouseUp={() => voice.setIsPttPressed(false)}
+                        onMouseLeave={() => voice.setIsPttPressed(false)}
+                        onTouchStart={() => voice.setIsPttPressed(true)}
+                        onTouchEnd={() => voice.setIsPttPressed(false)}
+                        className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer select-none ${
+                          voice.isPttPressed
+                            ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] border-[var(--pastel-accent)]'
+                            : 'border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)]'
+                        }`}
+                      >
+                        <Mic className="w-3.5 h-3.5" />
+                        <span>{voice.isPttPressed ? 'Talking...' : 'Hold to Talk (Space)'}</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void voice.updateVoiceSettings({ deafened: !voice.settings.deafened })
+                      }
+                      className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer ${
+                        voice.settings.deafened
+                          ? 'border-red-200 bg-red-50 text-red-700'
+                          : 'border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)]'
+                      }`}
+                    >
+                      {voice.settings.deafened ? (
+                        <HeadphoneOff className="w-3.5 h-3.5" />
+                      ) : (
+                        <Headphones className="w-3.5 h-3.5" />
+                      )}
+                      <span>{voice.settings.deafened ? 'Undeafen' : 'Deafen'}</span>
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Voice Volume & Live Mic Level */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-[var(--pastel-muted)]">
+                      Incoming Voice Volume
+                    </span>
+                    <span className="font-mono-tabular text-[var(--pastel-muted)]">
+                      {voice.settings.deafened
+                        ? 'Deafened'
+                        : `${Math.round(voice.settings.masterVolume * 100)}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(voice.settings.masterVolume * 100)}
+                    onChange={(e) =>
+                      void voice.updateVoiceSettings({
+                        masterVolume: Number(e.target.value) / 100,
+                        deafened: false,
+                      })
+                    }
+                    aria-label="Incoming voice volume"
+                    className="w-full accent-[var(--pastel-accent)] cursor-pointer"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-[var(--pastel-muted)]">
+                      Microphone Input Level
+                    </span>
+                    <span className="font-mono-tabular text-[var(--pastel-muted)]">
+                      {voice.voiceJoined
+                        ? voice.effectiveMuted
+                          ? 'Muted'
+                          : `${voice.micLevel}%`
+                        : 'Offline'}
+                    </span>
+                  </div>
+                  <div className="h-2.5 rounded-full bg-[var(--pastel-soft)] overflow-hidden border border-[var(--pastel-border)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--pastel-accent)] transition-all duration-100"
+                      style={{
+                        width: `${voice.voiceJoined && !voice.effectiveMuted ? voice.micLevel : 0}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Expandable Voice Settings Drawer */}
+              {showVoiceSettings && (
+                <div className="p-4 rounded-2xl bg-[var(--pastel-canvas)] border border-[var(--pastel-border)] space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-extrabold tracking-tight">
+                      Audio &amp; Microphone Settings
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void voice.refreshDevices()}
+                      className="text-[11px] font-bold text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Refresh Devices</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-bold text-[var(--pastel-muted)]">
+                        Microphone Input
+                      </span>
+                      <PastelSelect
+                        value={voice.settings.inputDeviceId}
+                        onChange={(val) => void voice.updateVoiceSettings({ inputDeviceId: val })}
+                        ariaLabel="Microphone input device"
+                        variant="field"
+                        className="w-full"
+                        options={[
+                          { value: '', label: 'System Default Mic' },
+                          ...voice.inputDevices
+                            .filter((d) => d.deviceId)
+                            .map((d) => ({ value: d.deviceId, label: d.label })),
+                        ]}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-bold text-[var(--pastel-muted)]">
+                        Speaker / Headphones
+                      </span>
+                      <PastelSelect
+                        value={voice.settings.outputDeviceId}
+                        onChange={(val) => void voice.updateVoiceSettings({ outputDeviceId: val })}
+                        ariaLabel="Speaker output device"
+                        variant="field"
+                        className="w-full"
+                        options={[
+                          { value: '', label: 'System Default Output' },
+                          ...voice.outputDevices
+                            .filter((d) => d.deviceId)
+                            .map((d) => ({ value: d.deviceId, label: d.label })),
+                        ]}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-bold text-[var(--pastel-muted)]">
+                      Talking Mode
+                    </span>
+                    <div className="flex items-center gap-1.5 p-1 bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-full">
+                      {(
+                        [
+                          { id: 'open_mic' as const, label: 'Open Mic (Mute/Unmute)' },
+                          { id: 'push_to_talk' as const, label: 'Push-to-Talk (Hold Space)' },
+                        ]
+                      ).map((mode) => (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() =>
+                            void voice.updateVoiceSettings({ voiceMode: mode.id })
+                          }
+                          className={`flex-1 py-1.5 px-3 text-xs font-bold rounded-full transition-colors cursor-pointer ${
+                            voice.settings.voiceMode === mode.id
+                              ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)]'
+                              : 'text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)]'
+                          }`}
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {(
+                      [
+                        { key: 'echoCancellation' as const, label: 'Echo Cancellation' },
+                        { key: 'noiseSuppression' as const, label: 'Noise Suppression' },
+                        { key: 'autoGainControl' as const, label: 'Auto Gain Control' },
+                      ]
+                    ).map((toggle) => {
+                      const active = voice.settings[toggle.key];
+                      return (
+                        <button
+                          key={toggle.key}
+                          type="button"
+                          role="switch"
+                          aria-checked={active}
+                          onClick={() =>
+                            void voice.updateVoiceSettings({ [toggle.key]: !active })
+                          }
+                          className={`px-3 py-2 rounded-2xl border text-xs font-bold flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                            active
+                              ? 'border-[var(--pastel-accent)] bg-[var(--pastel-soft)] text-[var(--pastel-ink)]'
+                              : 'border-[var(--pastel-border)] bg-[var(--pastel-surface)] text-[var(--pastel-muted)]'
+                          }`}
+                        >
+                          <span className="truncate">{toggle.label}</span>
+                          <span>{active ? 'On' : 'Off'}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
           </div>
 
-          {/* Participants & Quiet Check-in */}
+          {/* Participants & Room Text Chat */}
           <div className="lg:col-span-5 space-y-6">
             <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-4">
               <div className="flex items-center justify-between">
@@ -686,77 +1181,252 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
               <div className="divide-y divide-[var(--pastel-border)]">
                 {participants.map((p) => {
                   const initials = (p.displayName || 'S').slice(0, 2).toUpperCase();
+                  const isSelf = p.uid === uid;
+                  const inVoice = Boolean(p.voiceJoined);
+                  const peerSpeaking = inVoice && Boolean(p.isSpeaking) && !p.isMuted;
+                  const override = voice.peerOverrides[p.uid] || { volume: 1, muted: false };
+
                   return (
-                    <div key={p.id} className="py-2.5 flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        {p.avatarUrl ? (
-                          <img
-                            src={p.avatarUrl}
-                            alt={p.displayName}
-                            referrerPolicy="no-referrer"
-                            className="w-8 h-8 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0">
-                            {initials}
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-sm font-bold truncate">{p.displayName}</div>
-                          <div className="text-xs text-[var(--pastel-muted)] truncate">
-                            {p.subjectName || 'General Study'}
+                    <div key={p.id} className="py-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {p.avatarUrl ? (
+                            <img
+                              src={p.avatarUrl}
+                              alt={p.displayName}
+                              referrerPolicy="no-referrer"
+                              className={`w-8 h-8 rounded-full object-cover bg-[var(--pastel-soft)] shrink-0 ${
+                                peerSpeaking ? 'ring-2 ring-[var(--pastel-accent)] ring-offset-1' : ''
+                              }`}
+                            />
+                          ) : (
+                            <div
+                              className={`w-8 h-8 rounded-full bg-[var(--pastel-soft)] text-[var(--pastel-ink)] text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                                peerSpeaking ? 'ring-2 ring-[var(--pastel-accent)] ring-offset-1' : ''
+                              }`}
+                            >
+                              {initials}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-sm font-bold truncate">
+                                {p.displayName}
+                                {isSelf ? ' (You)' : ''}
+                              </span>
+                              {inVoice && (
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1 shrink-0 ${
+                                    p.isMuted
+                                      ? 'bg-[var(--pastel-canvas)] border border-[var(--pastel-border)] text-[var(--pastel-muted)]'
+                                      : peerSpeaking
+                                        ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)]'
+                                        : 'bg-[var(--pastel-soft)] text-[var(--pastel-ink)]'
+                                  }`}
+                                >
+                                  {p.isMuted ? (
+                                    <MicOff className="w-2.5 h-2.5" />
+                                  ) : (
+                                    <Mic className="w-2.5 h-2.5" />
+                                  )}
+                                  <span>
+                                    {p.isMuted ? 'Muted' : peerSpeaking ? 'Speaking' : 'Mic On'}
+                                  </span>
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-[var(--pastel-muted)] truncate">
+                              {p.subjectName || 'General Study'}
+                            </div>
                           </div>
                         </div>
+                        <span className="text-xs font-bold text-[var(--pastel-muted)] capitalize shrink-0">
+                          {p.status}
+                        </span>
                       </div>
-                      <span className="text-xs font-bold text-[var(--pastel-muted)] capitalize shrink-0">
-                        {p.status}
-                      </span>
+
+                      {!isSelf && inVoice && voice.voiceJoined && (
+                        <div className="pl-11 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              voice.setPeerAudioOverride(p.uid, { muted: !override.muted })
+                            }
+                            aria-label={override.muted ? `Unmute ${p.displayName}` : `Mute ${p.displayName}`}
+                            className="p-1 rounded-full border border-[var(--pastel-border)] text-[var(--pastel-muted)] hover:text-[var(--pastel-ink)] cursor-pointer shrink-0"
+                          >
+                            {override.muted ? (
+                              <VolumeX className="w-3 h-3 text-red-600" />
+                            ) : (
+                              <Volume2 className="w-3 h-3" />
+                            )}
+                          </button>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={override.muted ? 0 : Math.round(override.volume * 100)}
+                            onChange={(e) =>
+                              voice.setPeerAudioOverride(p.uid, {
+                                volume: Number(e.target.value) / 100,
+                                muted: Number(e.target.value) === 0,
+                              })
+                            }
+                            aria-label={`Volume for ${p.displayName}`}
+                            className="flex-1 max-w-[140px] accent-[var(--pastel-accent)] cursor-pointer"
+                          />
+                          <span className="text-[10px] font-mono-tabular text-[var(--pastel-muted)] w-8">
+                            {override.muted ? '0%' : `${Math.round(override.volume * 100)}%`}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </section>
 
+            {/* Real-Time Room Text Chat */}
             <section className="bg-[var(--pastel-surface)] border border-[var(--pastel-border)] rounded-3xl p-6 space-y-4">
-              <div>
-                <h2 className="text-base font-extrabold tracking-tight">Quiet Check-Ins</h2>
-                <p className="text-xs text-[var(--pastel-muted)]">
-                  Share your study goal for this block without noisy distractions.
-                </p>
-              </div>
-              <div className="max-h-52 overflow-y-auto space-y-2.5 pr-1">
-                {messages.length === 0 ? (
-                  <p className="text-xs text-[var(--pastel-muted)] py-4 text-center">
-                    No check-ins yet. Say what you&apos;re working on!
-                  </p>
-                ) : (
-                  messages.map((m) => (
-                    <div key={m.id} className="p-3.5 rounded-2xl bg-[var(--pastel-canvas)] border border-[var(--pastel-border)] space-y-0.5">
-                      <div className="text-[11px] font-medium text-[var(--pastel-muted)]">
-                        {m.senderName}
-                      </div>
-                      <p className="text-xs leading-relaxed">{m.text}</p>
-                    </div>
-                  ))
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  {chatEnabled ? (
+                    <MessageSquare className="w-4 h-4 text-[var(--pastel-muted)]" />
+                  ) : (
+                    <MessageSquareOff className="w-4 h-4 text-[var(--pastel-muted)]" />
+                  )}
+                  <div>
+                    <h2 className="text-base font-extrabold tracking-tight">
+                      Room Chat ({messages.length})
+                    </h2>
+                    <p className="text-xs text-[var(--pastel-muted)]">
+                      {chatEnabled
+                        ? 'Talk, ask study questions, or check in with everyone here.'
+                        : 'Text chat is paused by the host for quiet study.'}
+                    </p>
+                  </div>
+                </div>
+
+                {isHost && (
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleHostRoomComms('chatEnabled')}
+                    className={`px-3 py-1 rounded-full border text-[11px] font-bold cursor-pointer whitespace-nowrap ${
+                      chatEnabled
+                        ? 'border-[var(--pastel-border)] bg-[var(--pastel-canvas)] hover:bg-[var(--pastel-soft)]'
+                        : 'border-red-200 bg-red-50 text-red-700'
+                    }`}
+                  >
+                    {chatEnabled ? 'Host: Chat On' : 'Host: Chat Off'}
+                  </button>
                 )}
               </div>
-              <form onSubmit={handleSendCheckIn} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={checkInText}
-                  onChange={(e) => setCheckInText(e.target.value)}
-                  placeholder="Share a quick goal check-in..."
-                  maxLength={280}
-                  className="flex-1 px-4 py-2.5 text-xs rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  disabled={!checkInText.trim()}
-                  className="w-9 h-9 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] hover:opacity-90 flex items-center justify-center cursor-pointer disabled:opacity-40 shrink-0"
-                  aria-label="Send check-in"
+
+              <div className="relative">
+                <div
+                  ref={chatScrollRef}
+                  onScroll={handleChatScroll}
+                  className="max-h-72 min-h-[180px] overflow-y-auto overscroll-contain space-y-2.5 pr-1"
                 >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
+                  {messages.length === 0 ? (
+                    <p className="text-xs text-[var(--pastel-muted)] py-8 text-center">
+                      No messages yet. Say hello or share what you&apos;re studying!
+                    </p>
+                  ) : (
+                    messages.map((m) => {
+                      const isMine = m.senderId === uid;
+                      const isSenderHost = m.senderId === activeRoom.hostId;
+                      const canDelete = isMine || isHost;
+                      const timeStr = formatMessageTime(m.createdAt);
+
+                      return (
+                        <div
+                          key={m.id}
+                          className={`p-3.5 rounded-2xl border space-y-1 ${
+                            isMine
+                              ? 'bg-[var(--pastel-soft)] border-[var(--pastel-border)]'
+                              : 'bg-[var(--pastel-canvas)] border-[var(--pastel-border)]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-bold text-[var(--pastel-muted)]">
+                              <span className="truncate text-[var(--pastel-ink)]">
+                                {isMine ? 'You' : m.senderName}
+                              </span>
+                              {isSenderHost && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-[var(--pastel-surface)] border border-[var(--pastel-border)] text-[9px] uppercase tracking-wide">
+                                  Host
+                                </span>
+                              )}
+                              {timeStr && <span className="font-mono-tabular font-normal">{timeStr}</span>}
+                            </div>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteChat(m.id)}
+                                aria-label="Delete message"
+                                className="p-1 text-[var(--pastel-muted)] hover:text-red-600 cursor-pointer shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-xs leading-relaxed break-words whitespace-pre-wrap">
+                            {m.text}
+                          </p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {chatScrolledUp && messages.length > 0 && (
+                  <div className="flex justify-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => scrollToChatBottom('smooth')}
+                      className={`px-3.5 py-1.5 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 shadow-sm cursor-pointer transition-colors ${
+                        hasUnreadChat
+                          ? 'bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)]'
+                          : 'bg-[var(--pastel-surface)] border border-[var(--pastel-border)] text-[var(--pastel-ink)] hover:bg-[var(--pastel-soft)]'
+                      }`}
+                    >
+                      <ArrowDown className="w-3 h-3" />
+                      <span>{hasUnreadChat ? 'New messages' : 'Jump to latest'}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleSendChat} className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={chatText}
+                    disabled={!chatEnabled || sendingChat}
+                    onChange={(e) => setChatText(e.target.value)}
+                    placeholder={
+                      chatEnabled
+                        ? 'Send a message to the room...'
+                        : 'Text chat is paused by the host'
+                    }
+                    maxLength={BLUEPRINT_LIMITS.ROOM_MESSAGE_MAX}
+                    className="flex-1 px-4 py-2.5 text-xs rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] focus:outline-none disabled:opacity-50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!chatEnabled || !chatText.trim() || sendingChat}
+                    className="w-9 h-9 rounded-full bg-[var(--pastel-accent)] text-[var(--pastel-accent-ink)] hover:opacity-90 flex items-center justify-center cursor-pointer disabled:opacity-40 shrink-0"
+                    aria-label="Send message"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {chatText.length >= 750 && (
+                  <div className="text-[10px] font-mono-tabular text-[var(--pastel-muted)] text-right">
+                    {chatText.length} / {BLUEPRINT_LIMITS.ROOM_MESSAGE_MAX}
+                  </div>
+                )}
               </form>
             </section>
           </div>
@@ -895,6 +1565,46 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
             </div>
           )}
 
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={roomCreateChatEnabled}
+              onClick={() => setRoomCreateChatEnabled((prev) => !prev)}
+              className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                roomCreateChatEnabled
+                  ? 'bg-[var(--pastel-soft)] border-[var(--pastel-accent)] text-[var(--pastel-ink)]'
+                  : 'bg-[var(--pastel-canvas)] border-[var(--pastel-border)] text-[var(--pastel-muted)]'
+              }`}
+            >
+              {roomCreateChatEnabled ? (
+                <MessageSquare className="w-3.5 h-3.5" />
+              ) : (
+                <MessageSquareOff className="w-3.5 h-3.5" />
+              )}
+              <span>{roomCreateChatEnabled ? 'Text Chat: On' : 'Text Chat: Off'}</span>
+            </button>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={roomCreateVoiceEnabled}
+              onClick={() => setRoomCreateVoiceEnabled((prev) => !prev)}
+              className={`px-4 py-2 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                roomCreateVoiceEnabled
+                  ? 'bg-[var(--pastel-soft)] border-[var(--pastel-accent)] text-[var(--pastel-ink)]'
+                  : 'bg-[var(--pastel-canvas)] border-[var(--pastel-border)] text-[var(--pastel-muted)]'
+              }`}
+            >
+              {roomCreateVoiceEnabled ? (
+                <Mic className="w-3.5 h-3.5" />
+              ) : (
+                <MicOff className="w-3.5 h-3.5" />
+              )}
+              <span>{roomCreateVoiceEnabled ? 'Voice Room: On' : 'Voice Room: Off'}</span>
+            </button>
+          </div>
+
           <div className="flex justify-end gap-2">
             <button
               type="button"
@@ -939,11 +1649,21 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
                   className="p-5 rounded-2xl border border-[var(--pastel-border)] bg-[var(--pastel-canvas)] flex flex-col justify-between space-y-4 min-h-[164px]"
                 >
                   <div className="space-y-1">
-                    <div className="text-xs text-[var(--pastel-muted)] flex items-center gap-1.5">
+                    <div className="text-xs text-[var(--pastel-muted)] flex flex-wrap items-center gap-1.5">
                       <Globe className="w-3.5 h-3.5" />
                       <span>{room.hostName}</span>
                       <span aria-hidden="true">·</span>
                       <span className="capitalize">{room.timerMode}</span>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        {room.voiceEnabled !== false && room.chatEnabled !== false
+                          ? 'Text & Voice'
+                          : room.chatEnabled !== false
+                            ? 'Text Chat'
+                            : room.voiceEnabled !== false
+                              ? 'Voice Only'
+                              : 'Silent'}
+                      </span>
                     </div>
                     <h3 className="text-base font-extrabold tracking-tight">{room.name}</h3>
                     {room.topic && (

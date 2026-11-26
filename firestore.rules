@@ -291,7 +291,7 @@ service cloud.firestore {
 
     function isValidFocusRoom(data) {
       return data.keys().hasAll(['hostId', 'hostName', 'name', 'visibility', 'timerMode', 'timerDurationSeconds', 'timerStatus', 'timerStartedAtMs', 'timerAccumulatedSeconds', 'ambientSound', 'isActive', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['hostId', 'hostName', 'name', 'topic', 'visibility', 'timerMode', 'timerDurationSeconds', 'timerStatus', 'timerStartedAtMs', 'timerAccumulatedSeconds', 'ambientSound', 'isActive', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['hostId', 'hostName', 'name', 'topic', 'visibility', 'timerMode', 'timerDurationSeconds', 'timerStatus', 'timerStartedAtMs', 'timerAccumulatedSeconds', 'ambientSound', 'chatEnabled', 'voiceEnabled', 'isActive', 'createdAt', 'updatedAt'])
         && isValidId(data.hostId)
         && data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 80
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
@@ -303,6 +303,8 @@ service cloud.firestore {
         && data.timerStartedAtMs is number && data.timerStartedAtMs >= 0
         && data.timerAccumulatedSeconds is number && data.timerAccumulatedSeconds >= 0 && data.timerAccumulatedSeconds <= 86400
         && data.ambientSound in ['none', 'brown', 'pink', 'white', 'rain', 'forest']
+        && (!('chatEnabled' in data) || data.chatEnabled is bool)
+        && (!('voiceEnabled' in data) || data.voiceEnabled is bool)
         && data.isActive is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -331,7 +333,7 @@ service cloud.firestore {
 
     function isValidRoomParticipant(data) {
       return data.keys().hasAll(['uid', 'roomId', 'roomVisibility', 'roomHostId', 'displayName', 'status', 'joinedAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'roomId', 'roomVisibility', 'roomHostId', 'displayName', 'avatarUrl', 'subjectName', 'status', 'joinedAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'roomId', 'roomVisibility', 'roomHostId', 'displayName', 'avatarUrl', 'subjectName', 'status', 'voiceJoined', 'isMuted', 'isSpeaking', 'voiceSessionId', 'joinedAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
         && isValidId(data.roomId)
@@ -341,6 +343,10 @@ service cloud.firestore {
         && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 100000))
         && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 100))
         && data.status in ['focusing', 'break', 'idle']
+        && (!('voiceJoined' in data) || data.voiceJoined is bool)
+        && (!('isMuted' in data) || data.isMuted is bool)
+        && (!('isSpeaking' in data) || data.isSpeaking is bool)
+        && (!('voiceSessionId' in data) || (data.voiceSessionId is string && data.voiceSessionId.size() <= 64))
         && data.joinedAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -354,7 +360,23 @@ service cloud.firestore {
         && isValidId(data.senderId)
         && data.senderId == request.auth.uid
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
-        && data.text is string && data.text.size() >= 1 && data.text.size() <= 280
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidRoomVoiceSignal(data) {
+      return data.keys().hasAll(['roomId', 'roomVisibility', 'roomHostId', 'fromUid', 'toUid', 'sessionId', 'kind', 'payload', 'createdAt'])
+        && data.keys().hasOnly(['roomId', 'roomVisibility', 'roomHostId', 'fromUid', 'toUid', 'sessionId', 'kind', 'payload', 'createdAt'])
+        && isValidId(data.roomId)
+        && data.roomVisibility in ['public', 'private']
+        && isValidId(data.roomHostId)
+        && isValidId(data.fromUid)
+        && data.fromUid == request.auth.uid
+        && isValidId(data.toUid)
+        && data.toUid != data.fromUid
+        && data.sessionId is string && data.sessionId.size() >= 1 && data.sessionId.size() <= 64
+        && data.kind in ['offer', 'answer', 'ice', 'bye']
+        && data.payload is string && data.payload.size() >= 1 && data.payload.size() <= 16000
         && data.createdAt is timestamp;
     }
 
@@ -563,7 +585,8 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           incoming().diff(existing()).affectedKeys().hasOnly(['timerMode', 'timerDurationSeconds', 'timerStatus', 'timerStartedAtMs', 'timerAccumulatedSeconds', 'ambientSound', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'visibility', 'isActive', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['chatEnabled', 'voiceEnabled', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'visibility', 'chatEnabled', 'voiceEnabled', 'isActive', 'updatedAt'])
         );
       allow delete: if isSignedIn() && isValidId(roomId) && existing().hostId == request.auth.uid;
 
@@ -638,7 +661,10 @@ service cloud.firestore {
           && incoming().roomHostId == existing().roomHostId
           && incoming().joinedAt == existing().joinedAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'subjectName', 'status', 'updatedAt']);
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'subjectName', 'status', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['voiceJoined', 'isMuted', 'isSpeaking', 'voiceSessionId', 'updatedAt'])
+          );
         allow delete: if isSignedIn() && isValidId(roomId) && isValidId(participantId)
           && (participantId == request.auth.uid || existing().roomHostId == request.auth.uid);
       }
@@ -671,6 +697,28 @@ service cloud.firestore {
         allow update: if false;
         allow delete: if isSignedIn() && isValidId(roomId) && isValidId(messageId)
           && (existing().senderId == request.auth.uid || existing().roomHostId == request.auth.uid);
+      }
+
+      match /voiceSignals/{signalId} {
+        allow get: if isSignedIn() && isValidId(roomId) && isValidId(signalId) && (
+          existing().toUid == request.auth.uid
+          || existing().fromUid == request.auth.uid
+        );
+        allow list: if isSignedIn() && existing().toUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(roomId) && isValidId(signalId)
+          && isValidRoomVoiceSignal(incoming())
+          && incoming().roomId == roomId
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/focusRooms/$(roomId))
+          && incoming().roomVisibility == get(/databases/$(database)/documents/focusRooms/$(roomId)).data.visibility
+          && incoming().roomHostId == get(/databases/$(database)/documents/focusRooms/$(roomId)).data.hostId
+          && exists(/databases/$(database)/documents/focusRooms/$(roomId)/participants/$(request.auth.uid));
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(roomId) && isValidId(signalId) && (
+          existing().toUid == request.auth.uid
+          || existing().fromUid == request.auth.uid
+          || existing().roomHostId == request.auth.uid
+        );
       }
     }
 
